@@ -31,11 +31,8 @@ st.set_page_config(page_title="Академические родословные
 # Полноширинный (full-bleed) контейнер для компонентов
 st.markdown("""
 <style>
-  /* Force the main container to be full-width */
-  .block-container {
-    max-width: 100% !important;
-    padding-left: 1rem;
-    padding-right: 1rem;
+  section.main > div {
+        max-width: 100%;
   }
 </style>
 """, unsafe_allow_html=True)
