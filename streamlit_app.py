@@ -290,7 +290,7 @@ if build:
         html = build_pyvis_html(G, root)
         st.components.v1.html(html, height=1000, scrolling=True)
         st.markdown(
-            f'<iframe srcdoc="{html.replace(\'"\', \'&quot;\')}" style="width:100%; height:1000px; border:none;"></iframe>',
+            f'<iframe srcdoc="{html.replace(\'"\', "&quot;")}" style="width:100%; height:1000px; border:none;"></iframe>',
             unsafe_allow_html=True
         )
         html_bytes = html.encode("utf-8")
