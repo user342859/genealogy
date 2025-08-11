@@ -165,7 +165,7 @@ def draw_matplotlib(G: nx.DiGraph, root: str) -> plt.Figure:
 # --------- Интерактивная HTML-визуализация (уменьшаем шрифты) -----------
 
 def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
-    net = Network(height="760px", width="100%", directed=True, bgcolor="#ffffff")
+    net = Network(height="1000px", width="100%", directed=True, bgcolor="#ffffff")
     net.toggle_physics(True)
 
     for n in G.nodes:
