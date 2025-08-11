@@ -32,6 +32,7 @@ st.set_page_config(page_title="Академические родословные
 st.markdown("""
 <style>
     .block-container {max-width: 100% !important; padding-left: 1rem; padding-right: 1rem;}
+    iframe {width: 100% !important;}
 </style>
 """, unsafe_allow_html=True)
 
