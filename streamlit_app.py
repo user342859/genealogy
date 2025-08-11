@@ -285,12 +285,10 @@ if build:
         fig.savefig(png_buf, format="png", dpi=300, bbox_inches="tight")
         png_bytes = png_buf.getvalue()
 
-        col_thumb, col_html = st.columns([1, 6])
-        with col_thumb:
-            st.image(png_bytes, caption="Миниатюра PNG", use_container_width=False, width=220)
-        with col_html:
-            html = build_pyvis_html(G, root)
-            st.components.v1.html(html, height=900, scrolling=True)
+        # Миниатюра PNG сверху, HTML ниже (во всю ширину контейнера)
+        st.image(png_bytes, caption="Миниатюра PNG", width=220)
+        html = build_pyvis_html(G, root)
+        st.components.v1.html(html, height=1000, scrolling=True)
         html_bytes = html.encode("utf-8")
 
         # CSV с выборкой
