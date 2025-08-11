@@ -287,7 +287,7 @@ if build:
 
         col_thumb, col_html = st.columns([1, 6])
         with col_thumb:
-            st.image(png_bytes, caption="Миниатюра PNG", use_column_width=False, width=220)
+            st.image(png_bytes, caption="Миниатюра PNG", use_container_width=False, width=220)
         with col_html:
             html = build_pyvis_html(G, root)
             st.components.v1.html(html, height=900, scrolling=True)
