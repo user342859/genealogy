@@ -31,19 +31,12 @@ st.set_page_config(page_title="Академические родословные
 # Полноширинный (full-bleed) контейнер для компонентов
 st.markdown("""
 <style>
-  /* Оставим страницы широкими (можете убрать max-width вовсе, если хотите) */
-  .block-container {max-width: 100% !important; padding-left: 1rem; padding-right: 1rem;}
-
-  /* Класс, который вырывается за пределы block-container */
-  .fullbleed {
-    position: relative;
-    left: 50%;
-    right: 50%;
-    margin-left: -50vw;
-    margin-right: -50vw;
-    width: 100vw;           /* вся ширина окна */
+  /* Force the main container to be full-width */
+  .block-container {
+    max-width: 100% !important;
+    padding-left: 1rem;
+    padding-right: 1rem;
   }
-  .fullbleed iframe { width: 100% !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -307,14 +300,8 @@ if build:
 
         st.image(png_bytes, caption="Миниатюра PNG", width=220)
 
-        st.image(png_bytes, caption="Миниатюра PNG", width=220)
-
         html = build_pyvis_html(G, root)
-        # Оборачиваем компонент в full-bleed контейнер
-        st.markdown('<div class="fullbleed">', unsafe_allow_html=True)
         st.components.v1.html(html, height=1000, scrolling=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-
         html_bytes = html.encode("utf-8")
 
         # CSV с выборкой
