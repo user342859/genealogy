@@ -27,15 +27,6 @@ SUPERVISOR_COLUMNS = [f"supervisors_{i}.name" for i in (1, 2)]
 
 # ---------------------- Оформление страницы -------------------------------
 st.set_page_config(page_title="Академические родословные", layout="wide")
-
-# Растягиваем центральный контейнер на всю ширину
-st.markdown("""
-<style>
-    .block-container {max-width: 100% !important; padding-left: 1rem; padding-right: 1rem;}
-    iframe {width: 100% !important;}
-</style>
-""", unsafe_allow_html=True)
-
 st.title("📚 Конструктор академических родословных")
 st.caption(
     "Данные заранее загружены в репозиторий (папка db_lineages). Выберите начальных руководителей и создайте деревья."
@@ -298,6 +289,10 @@ if build:
         
         html = build_pyvis_html(G, root)
         st.components.v1.html(html, height=1000, scrolling=True)
+        st.markdown(
+            f'<iframe srcdoc="{html.replace(\'"\', \'&quot;\')}" style="width:100%; height:1000px; border:none;"></iframe>',
+            unsafe_allow_html=True
+        )
         html_bytes = html.encode("utf-8")
 
         # CSV с выборкой
