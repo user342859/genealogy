@@ -31,8 +31,8 @@ st.set_page_config(page_title="Академические родословные
 # Полноширинный (full-bleed) контейнер для компонентов
 st.markdown("""
 <style>
-  section.main > div {
-        max-width: 100%;
+  iframe {
+        width: 100%;
   }
 </style>
 """, unsafe_allow_html=True)
@@ -298,7 +298,7 @@ if build:
         st.image(png_bytes, caption="Миниатюра PNG", width=220)
 
         html = build_pyvis_html(G, root)
-        st.components.v1.html(html, height=1000, width=100%, scrolling=True)
+        st.components.v1.html(html, height=1000, scrolling=True)
         html_bytes = html.encode("utf-8")
 
         # CSV с выборкой
