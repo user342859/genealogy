@@ -136,6 +136,10 @@ def build_share_url(names: List[str]) -> str:
 
 
 def share_button(names: List[str], key: str) -> None:
+    @st.dialog("Ссылка для доступа")
+    def _show_dialog(url: str) -> None:
+        st.text_input("URL", url, key=f"share_url_{key}")
+
     if st.button("🔗 Поделиться", key=key):
         try:
             st.query_params.clear()
@@ -146,8 +150,7 @@ def share_button(names: List[str], key: str) -> None:
             except Exception:
                 pass
         url = build_share_url(names)
-        with st.modal("Ссылка для доступа"):
-            st.text_input("URL", url, key=f"share_url_{key}")
+        _show_dialog(url)
 
 
 # --------- Рисование PNG (уменьшаем шрифты и узлы) -----------------------
@@ -285,17 +288,20 @@ for col in SUPERVISOR_COLUMNS:
 
 # Параметры из адресной строки (?root=...)
 shared_roots = st.query_params.get_all("root")
+valid_shared_roots = [r for r in shared_roots if r in all_supervisor_names]
+manual_prefill = "\n".join(r for r in shared_roots if r not in all_supervisor_names)
 
 st.subheader("Выбор научных руководителей для построения деревьев")
 roots = st.multiselect(
     "Выберите имена из базы",
     options=sorted(all_supervisor_names),
-    default=shared_roots,  # если пришли по ссылке, подставляем имена
+    default=valid_shared_roots,  # если пришли по ссылке, подставляем имена
     help="Список формируется из столбцов с руководителями",
 )
 manual = st.text_area(
     "Или добавьте имена вручную в формате: Фамилия Имя Отчество (по одному на строку)",
     height=120,
+    value=manual_prefill,
 )
 manual_list = [r.strip() for r in manual.splitlines() if r.strip()]
 roots = list(dict.fromkeys([*roots, *manual_list]))  # убрать дубликаты, сохранить порядок
