@@ -137,6 +137,8 @@ def build_share_url(names: List[str]) -> str:
 
 def share_button(names: List[str], key: str) -> None:
     if st.button("🔗 Поделиться", key=key):
+        url = build_share_url(names)
+        st.session_state[f"share_url_{key}"] = url
         try:
             st.query_params["root"] = names
         except Exception:
@@ -144,7 +146,11 @@ def share_button(names: List[str], key: str) -> None:
                 st.experimental_set_query_params(root=names)
             except Exception:
                 pass
-        st.session_state[f"share_url_{key}"] = build_share_url(names)
+        try:
+            with open("shared_links.txt", "a", encoding="utf-8") as fh:
+                fh.write(url + "\n")
+        except Exception:
+            pass
 
     url = st.session_state.get(f"share_url_{key}")
     if url:
