@@ -137,6 +137,14 @@ def build_share_url(names: List[str]) -> str:
 
 def share_button(names: List[str], key: str) -> None:
     if st.button("🔗 Поделиться", key=key):
+        try:
+            st.query_params.clear()
+            st.query_params["root"] = names
+        except Exception:
+            try:
+                st.experimental_set_query_params(root=names)
+            except Exception:
+                pass
         url = build_share_url(names)
         with st.modal("Ссылка для доступа"):
             st.text_input("URL", url, key=f"share_url_{key}")
