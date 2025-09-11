@@ -253,18 +253,26 @@ all_supervisor_names: Set[str] = set()
 for col in SUPERVISOR_COLUMNS:
     all_supervisor_names.update({v for v in df[col].dropna().astype(str).unique() if v})
 
+# Параметры из адресной строки (?root=...)
+qs = st.experimental_get_query_params()
+shared_roots = qs.get("root", [])
+
 st.subheader("Выбор научных руководителей для построения деревьев")
 roots = st.multiselect(
     "Выберите имена из базы",
     options=sorted(all_supervisor_names),
-    default=[],  # НИЧЕГО не выбрано по умолчанию
+    default=shared_roots,  # если пришли по ссылке, подставляем имена
     help="Список формируется из столбцов с руководителями",
 )
-manual = st.text_area("Или добавьте имена вручную в формате: Фамилия Имя Отчество (по одному на строку)", height=120)
+manual = st.text_area(
+    "Или добавьте имена вручную в формате: Фамилия Имя Отчество (по одному на строку)",
+    height=120,
+)
 manual_list = [r.strip() for r in manual.splitlines() if r.strip()]
 roots = list(dict.fromkeys([*roots, *manual_list]))  # убрать дубликаты, сохранить порядок
 
-build = st.button("Построить деревья", type="primary")
+# Если есть имена в параметрах, сразу строим деревья
+build = st.button("Построить деревья", type="primary") or bool(shared_roots)
 export_md_outline = st.checkbox("Также сохранить оглавление (.md)", value=False)
 
 if build:
@@ -340,12 +348,18 @@ if build:
         try:
             zf.close()
             if all_zip_buf.getbuffer().nbytes > 0:
-                st.download_button(
-                    label="⬇️ Скачать всё архивом (ZIP)",
-                    data=all_zip_buf.getvalue(),
-                    file_name="lineages_export.zip",
-                    mime="application/zip",
-                )
+                col_zip, col_share = st.columns([3, 1])
+                with col_zip:
+                    st.download_button(
+                        label="⬇️ Скачать всё архивом (ZIP)",
+                        data=all_zip_buf.getvalue(),
+                        file_name="lineages_export.zip",
+                        mime="application/zip",
+                    )
+                with col_share:
+                    if st.button("🔗 Поделиться"):
+                        st.experimental_set_query_params(root=roots)
+                        st.success("Ссылка обновлена — её можно копировать из адресной строки.")
         except Exception:
             pass
 else:
