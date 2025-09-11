@@ -17,6 +17,8 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import pandas as pd
 import streamlit as st
+from urllib.parse import urlencode
+import zipfile
 from pyvis.network import Network
 
 # ---------------------- Константы -----------------------------------------
@@ -118,6 +120,34 @@ def multiline(name: str) -> str:
 
 def slug(s: str) -> str:
     return re.sub(r"[^A-Za-zА-Яа-я0-9]+", "_", s).strip("_")
+
+
+def build_share_url(names: List[str]) -> str:
+    params = urlencode([("root", n) for n in names])
+    try:
+        addr = st.get_option("browser.serverAddress")
+        port = st.get_option("browser.serverPort")
+        base_path = st.get_option("server.baseUrlPath") or ""
+        base_path = base_path.rstrip("/")
+        proto = "https" if str(port) == "443" else "http"
+        return f"{proto}://{addr}:{port}{base_path}?{params}" if params else f"{proto}://{addr}:{port}{base_path}"
+    except Exception:
+        return f"?{params}" if params else ""
+
+
+def share_button(names: List[str], key: str) -> None:
+    if st.button("🔗 Поделиться", key=key):
+        try:
+            st.query_params.clear()
+            st.query_params["root"] = names
+        except Exception:
+            try:
+                st.experimental_set_query_params(root=names)
+            except Exception:
+                pass
+        url = build_share_url(names)
+        with st.modal("Ссылка для доступа"):
+            st.text_input("URL", url, key=f"share_url_{key}")
 
 
 # --------- Рисование PNG (уменьшаем шрифты и узлы) -----------------------
@@ -280,12 +310,7 @@ if build:
         st.stop()
 
     all_zip_buf = io.BytesIO()
-    zf = None
-    try:
-        import zipfile
-        zf = zipfile.ZipFile(all_zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED)
-    except Exception:
-        pass
+    zf = zipfile.ZipFile(all_zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED)
 
     for root in roots:
         st.markdown("---")
@@ -336,31 +361,50 @@ if build:
             else:
                 st.empty()
 
-        if zf is not None:
-            zf.writestr(f"{s}.png", png_bytes)
-            zf.writestr(f"{s}.html", html_bytes)
-            zf.writestr(f"{s}.sampling.csv", csv_bytes)
-            if md_bytes is not None:
-                zf.writestr(f"{s}.xmind.md", md_bytes)
-
-    if zf is not None:
+        # ZIP для текущего руководителя
+        person_zip_buf = io.BytesIO()
         try:
-            zf.close()
-            if all_zip_buf.getbuffer().nbytes > 0:
-                col_zip, col_share = st.columns([3, 1])
-                with col_zip:
-                    st.download_button(
-                        label="⬇️ Скачать всё архивом (ZIP)",
-                        data=all_zip_buf.getvalue(),
-                        file_name="lineages_export.zip",
-                        mime="application/zip",
-                    )
-                with col_share:
-                    if st.button("🔗 Поделиться"):
-                        st.experimental_set_query_params(root=roots)
-                        st.success("Ссылка обновлена — её можно копировать из адресной строки.")
+            with zipfile.ZipFile(person_zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z_person:
+                z_person.writestr(f"{s}.png", png_bytes)
+                z_person.writestr(f"{s}.html", html_bytes)
+                z_person.writestr(f"{s}.sampling.csv", csv_bytes)
+                if md_bytes is not None:
+                    z_person.writestr(f"{s}.xmind.md", md_bytes)
+            person_zip = person_zip_buf.getvalue()
         except Exception:
-            pass
+            person_zip = None
+
+        col_zip_person, col_share_person = st.columns([3, 1])
+        with col_zip_person:
+            if person_zip is not None:
+                st.download_button(
+                    label="⬇️ Скачать всё архивом (ZIP)",
+                    data=person_zip,
+                    file_name=f"{s}.zip",
+                    mime="application/zip",
+                    key=f"zip_{s}",
+                )
+        with col_share_person:
+            share_button([root], key=f"share_{s}")
+
+        zf.writestr(f"{s}.png", png_bytes)
+        zf.writestr(f"{s}.html", html_bytes)
+        zf.writestr(f"{s}.sampling.csv", csv_bytes)
+        if md_bytes is not None:
+            zf.writestr(f"{s}.xmind.md", md_bytes)
+
+    zf.close()
+    if all_zip_buf.getbuffer().nbytes > 0:
+        col_zip, col_share = st.columns([3, 1])
+        with col_zip:
+            st.download_button(
+                label="⬇️ Скачать всё архивом (ZIP)",
+                data=all_zip_buf.getvalue(),
+                file_name="lineages_export.zip",
+                mime="application/zip",
+            )
+        with col_share:
+            share_button(roots, key="share_all")
 else:
     st.info("Выберите или добавьте имена руководителей и нажмите ‘Построить деревья’.")
 
