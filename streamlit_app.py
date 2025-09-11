@@ -137,11 +137,21 @@ def build_share_url(names: List[str]) -> str:
 
 def share_button(names: List[str], key: str) -> None:
     if st.button("🔗 Поделиться", key=key):
+        try:
+            st.query_params["root"] = names
+        except Exception:
+            try:
+                st.experimental_set_query_params(root=names)
+            except Exception:
+                pass
         st.session_state[f"share_url_{key}"] = build_share_url(names)
 
     url = st.session_state.get(f"share_url_{key}")
     if url:
-        if hasattr(st, "popover"):
+        if hasattr(st, "modal"):
+            with st.modal("Ссылка для доступа", key=f"modal_{key}"):
+                st.text_input("URL", url, key=f"share_url_input_{key}")
+        elif hasattr(st, "popover"):
             with st.popover("Ссылка для доступа", key=f"pop_{key}"):
                 st.text_input("URL", url, key=f"share_url_input_{key}")
         else:
