@@ -301,7 +301,10 @@ manual_list = [r.strip() for r in manual.splitlines() if r.strip()]
 roots = list(dict.fromkeys([*roots, *manual_list]))  # убрать дубликаты, сохранить порядок
 
 # Если есть имена в параметрах, сразу строим деревья
-build = st.button("Построить деревья", type="primary") or bool(shared_roots)
+build_clicked = st.button("Построить деревья", type="primary")
+if build_clicked or shared_roots:
+    st.session_state["built"] = True
+build = st.session_state.get("built", False)
 export_md_outline = st.checkbox("Также сохранить оглавление (.md)", value=False)
 
 if build:
