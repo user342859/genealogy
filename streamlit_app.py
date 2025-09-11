@@ -254,8 +254,7 @@ for col in SUPERVISOR_COLUMNS:
     all_supervisor_names.update({v for v in df[col].dropna().astype(str).unique() if v})
 
 # Параметры из адресной строки (?root=...)
-qs = st.experimental_get_query_params()
-shared_roots = qs.get("root", [])
+shared_roots = st.query_params.get_all("root")
 
 st.subheader("Выбор научных руководителей для построения деревьев")
 roots = st.multiselect(
