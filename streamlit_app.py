@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
@@ -18,6 +19,10 @@ import networkx as nx
 import pandas as pd
 import streamlit as st
 from urllib.parse import urlencode
+try:
+    from streamlit.runtime.scriptrunner import get_script_run_ctx
+except Exception:  # pragma: no cover - совместимость со старыми версиями streamlit
+    get_script_run_ctx = None  # type: ignore
 import zipfile
 from pyvis.network import Network
 
@@ -122,17 +127,78 @@ def slug(s: str) -> str:
     return re.sub(r"[^A-Za-zА-Яа-я0-9]+", "_", s).strip("_")
 
 
-def build_share_url(names: List[str]) -> str:
-    params = urlencode([("root", n) for n in names])
+def _clean_path(*parts: str) -> str:
+    cleaned = "/".join(p.strip("/") for p in parts if p and p.strip("/"))
+    return f"/{cleaned}" if cleaned else ""
+
+
+def _configured_base_url() -> str | None:
+    keys = ("public_base_url", "base_url", "BASE_URL")
+    for key in keys:
+        try:
+            val = st.secrets.get(key)  # type: ignore[attr-defined]
+        except Exception:
+            val = None
+        if val:
+            return str(val).rstrip("/")
+    for key in ("PUBLIC_BASE_URL", "BASE_URL"):
+        val = os.environ.get(key)
+        if val:
+            return val.rstrip("/")
+    return None
+
+
+def _base_url_from_headers() -> str | None:
+    if get_script_run_ctx is None:
+        return None
+    try:
+        ctx = get_script_run_ctx()
+    except Exception:
+        ctx = None
+    if not ctx:
+        return None
+    headers = getattr(ctx, "request_headers", None)
+    if not headers:
+        return None
+    lowered = {str(k).lower(): str(v) for k, v in headers.items() if v}
+    host = lowered.get("x-forwarded-host") or lowered.get("host")
+    if not host:
+        return None
+    proto = lowered.get("x-forwarded-proto")
+    if proto:
+        proto = proto.split(",")[0].strip()
+    else:
+        forwarded_port = lowered.get("x-forwarded-port")
+        proto = "https" if forwarded_port == "443" or host.endswith(":443") else "http"
+    prefix = lowered.get("x-forwarded-prefix", "")
+    base_path = st.get_option("server.baseUrlPath") or ""
+    path = _clean_path(prefix, base_path)
+    return f"{proto}://{host}{path}".rstrip("/")
+
+
+def _base_url_from_options() -> str | None:
     try:
         addr = st.get_option("browser.serverAddress")
         port = st.get_option("browser.serverPort")
-        base_path = st.get_option("server.baseUrlPath") or ""
-        base_path = base_path.rstrip("/")
-        proto = "https" if str(port) == "443" else "http"
-        return f"{proto}://{addr}:{port}{base_path}?{params}" if params else f"{proto}://{addr}:{port}{base_path}"
     except Exception:
-        return f"?{params}" if params else ""
+        return None
+    if not addr:
+        return None
+    base_path = st.get_option("server.baseUrlPath") or ""
+    proto = "https" if str(port) == "443" else "http"
+    if (proto == "https" and str(port) in ("", "443")) or (proto == "http" and str(port) in ("", "80")):
+        host = addr
+    else:
+        host = f"{addr}:{port}"
+    path = _clean_path(base_path)
+    return f"{proto}://{host}{path}".rstrip("/")
+
+
+def build_share_url(names: List[str]) -> str:
+    params = urlencode([("root", n) for n in names])
+    query = f"?{params}" if params else ""
+    base_url = _configured_base_url() or _base_url_from_headers() or _base_url_from_options()
+    return f"{base_url}{query}" if base_url else query
 
 
 def share_button(names: List[str], key: str) -> None:
