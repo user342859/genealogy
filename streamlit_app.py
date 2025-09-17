@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
@@ -17,7 +18,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import pandas as pd
 import streamlit as st
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 import zipfile
 from pyvis.network import Network
 
@@ -122,17 +123,126 @@ def slug(s: str) -> str:
     return re.sub(r"[^A-Za-zА-Яа-я0-9]+", "_", s).strip("_")
 
 
-def build_share_url(names: List[str]) -> str:
-    params = urlencode([("root", n) for n in names])
+def _clean_path(*parts: str) -> str:
+    cleaned = "/".join(p.strip("/") for p in parts if p and p.strip("/"))
+    return f"/{cleaned}" if cleaned else ""
+
+
+def _configured_base_url() -> str | None:
+    keys = ("public_base_url", "base_url", "BASE_URL")
+    for key in keys:
+        try:
+            val = st.secrets.get(key)  # type: ignore[attr-defined]
+        except Exception:
+            val = None
+        if val:
+            return str(val).rstrip("/")
+    for key in ("PUBLIC_BASE_URL", "BASE_URL"):
+        val = os.environ.get(key)
+        if val:
+            return val.rstrip("/")
+    return None
+
+
+def _base_url_from_headers() -> str | None:
+    context = getattr(st, "context", None)
+    if context is None:
+        return None
+
+    try:
+        headers = context.headers
+    except Exception:
+        return None
+
+    def _last_header(key: str) -> str | None:
+        try:
+            values = headers.get_all(key)
+        except Exception:
+            values = []
+        for val in reversed(values):
+            if val:
+                return val
+        try:
+            val = headers[key]
+        except KeyError:
+            return None
+        return val or None
+
+    forwarded = _last_header("forwarded")
+    host = _last_header("x-forwarded-host") or _last_header("host")
+    proto = _last_header("x-forwarded-proto")
+    port = _last_header("x-forwarded-port")
+    prefix = _last_header("x-forwarded-prefix") or ""
+    referer = _last_header("referer")
+
+    if forwarded:
+        parts = [p.strip() for p in forwarded.split(";") if p.strip()]
+        for part in parts:
+            lower = part.lower()
+            if lower.startswith("proto=") and not proto:
+                proto = part.split("=", 1)[1]
+            elif lower.startswith("host=") and not host:
+                host = part.split("=", 1)[1]
+
+    if referer:
+        parsed = urlparse(referer)
+        if not proto and parsed.scheme:
+            proto = parsed.scheme
+        if not host and parsed.netloc:
+            host = parsed.netloc
+        if not prefix and parsed.path and parsed.path != "/":
+            prefix = parsed.path
+
+    if not proto:
+        if port == "443" or (host and host.endswith(":443")):
+            proto = "https"
+        elif port == "80" or (host and host.endswith(":80")):
+            proto = "http"
+
+    if not host:
+        return None
+
+    proto = (proto or "https").split(",")[0].strip().lower()
+    if proto not in {"http", "https"}:
+        proto = "https" if proto.endswith("s") else "http"
+
+    host = host.split(",")[0].strip()
+    base_path = st.get_option("server.baseUrlPath") or ""
+    cleaned_prefix = prefix.strip("/")
+    cleaned_base = base_path.strip("/")
+    if cleaned_prefix:
+        if cleaned_base and cleaned_prefix.endswith(cleaned_base):
+            path = _clean_path(prefix)
+        else:
+            path = _clean_path(prefix, base_path)
+    else:
+        path = _clean_path(base_path)
+    return f"{proto}://{host}{path}".rstrip("/")
+
+
+def _base_url_from_options() -> str | None:
     try:
         addr = st.get_option("browser.serverAddress")
         port = st.get_option("browser.serverPort")
-        base_path = st.get_option("server.baseUrlPath") or ""
-        base_path = base_path.rstrip("/")
-        proto = "https" if str(port) == "443" else "http"
-        return f"{proto}://{addr}:{port}{base_path}?{params}" if params else f"{proto}://{addr}:{port}{base_path}"
     except Exception:
-        return f"?{params}" if params else ""
+        return None
+    if not addr:
+        return None
+    base_path = st.get_option("server.baseUrlPath") or ""
+    proto = "https" if str(port) == "443" else "http"
+    if (proto == "https" and str(port) in ("", "443")) or (proto == "http" and str(port) in ("", "80")):
+        host = addr
+    else:
+        host = f"{addr}:{port}"
+    path = _clean_path(base_path)
+    return f"{proto}://{host}{path}".rstrip("/")
+
+
+def build_share_url(names: List[str]) -> str:
+    params = urlencode([("root", n) for n in names])
+    query = f"?{params}" if params else ""
+    base_url = _configured_base_url() or _base_url_from_headers() or _base_url_from_options()
+    return f"{base_url}{query}" if base_url else query
 
 
 def share_button(names: List[str], key: str) -> None:
