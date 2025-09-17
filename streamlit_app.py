@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import pandas as pd
 import streamlit as st
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 try:
     from streamlit.runtime.scriptrunner import get_script_run_ctx
 except Exception:  # pragma: no cover - совместимость со старыми версиями streamlit
@@ -161,19 +161,29 @@ def _base_url_from_headers() -> str | None:
     if not headers:
         return None
     lowered = {str(k).lower(): str(v) for k, v in headers.items() if v}
-    host = lowered.get("x-forwarded-host") or lowered.get("host")
-    if not host:
-        return None
-    proto = lowered.get("x-forwarded-proto")
-    if proto:
-        proto = proto.split(",")[0].strip()
-    else:
-        forwarded_port = lowered.get("x-forwarded-port")
-        proto = "https" if forwarded_port == "443" or host.endswith(":443") else "http"
     prefix = lowered.get("x-forwarded-prefix", "")
     base_path = st.get_option("server.baseUrlPath") or ""
-    path = _clean_path(prefix, base_path)
-    return f"{proto}://{host}{path}".rstrip("/")
+
+    host = lowered.get("x-forwarded-host") or lowered.get("host")
+    if host:
+        proto = lowered.get("x-forwarded-proto")
+        if proto:
+            proto = proto.split(",")[0].strip()
+        else:
+            forwarded_port = lowered.get("x-forwarded-port")
+            proto = "https" if forwarded_port == "443" or host.endswith(":443") else "http"
+        path = _clean_path(prefix, base_path)
+        return f"{proto}://{host}{path}".rstrip("/")
+
+    referer = lowered.get("referer") or lowered.get("origin")
+    if not referer:
+        return None
+    parsed = urlsplit(referer)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    path = _clean_path(prefix or parsed.path, base_path)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    return f"{base}{path}".rstrip("/")
 
 
 def _base_url_from_options() -> str | None:
