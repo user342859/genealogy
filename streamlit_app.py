@@ -32,6 +32,14 @@ CSV_GLOB = "*.csv"            # какие файлы брать
 AUTHOR_COLUMN = "candidate_name"
 SUPERVISOR_COLUMNS = [f"supervisors_{i}.name" for i in (1, 2)]
 
+# Публичный адрес приложения для формирования ссылок "Поделиться".
+# При необходимости его можно переопределить через переменную окружения
+# PUBLIC_APP_URL.
+PUBLIC_APP_URL = os.environ.get(
+    "PUBLIC_APP_URL",
+    "https://lineages-trceuocpnvyaxysnpis72f.streamlit.app/",
+).strip().rstrip("/")
+
 # ---------------------- Оформление страницы -------------------------------
 st.set_page_config(page_title="Академические родословные", layout="wide")
 
@@ -133,6 +141,8 @@ def _clean_path(*parts: str) -> str:
 
 
 def _configured_base_url() -> str | None:
+    if PUBLIC_APP_URL:
+        return PUBLIC_APP_URL
     keys = ("public_base_url", "base_url", "BASE_URL")
     for key in keys:
         try:
