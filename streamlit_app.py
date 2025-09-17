@@ -7,10 +7,12 @@
 
 from __future__ import annotations
 
+import csv
 import io
 import json
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
@@ -31,6 +33,10 @@ DATA_DIR = "db_lineages"      # папка с CSV внутри репозито�
 CSV_GLOB = "*.csv"            # какие файлы брать
 AUTHOR_COLUMN = "candidate_name"
 SUPERVISOR_COLUMNS = [f"supervisors_{i}.name" for i in (1, 2)]
+
+FEEDBACK_FILE = Path("feedback.csv")
+FEEDBACK_FORM_STATE_KEY = "feedback_form_state"
+FEEDBACK_FORM_RESULT_KEY = "feedback_form_result"
 
 # Публичный адрес приложения для формирования ссылок "Поделиться".
 # При необходимости его можно переопределить через переменную окружения
@@ -53,23 +59,80 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+def _default_feedback_state() -> Dict[str, str]:
+    return {"name": "", "email": "", "message": ""}
+
+
+def _get_feedback_state() -> Dict[str, str]:
+    state = st.session_state.get(FEEDBACK_FORM_STATE_KEY)
+    if isinstance(state, dict):
+        return state
+    state = _default_feedback_state()
+    st.session_state[FEEDBACK_FORM_STATE_KEY] = state
+    return state
+
+
+def _store_feedback(name: str, email: str, message: str) -> None:
+    FEEDBACK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    record = [
+        datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        name.strip(),
+        email.strip(),
+        message.replace("\r\n", "\n").replace("\r", "\n"),
+    ]
+    file_exists = FEEDBACK_FILE.exists()
+    with FEEDBACK_FILE.open("a", newline="", encoding="utf-8") as fp:
+        writer = csv.writer(fp)
+        if not file_exists:
+            writer.writerow(["timestamp", "name", "email", "message"])
+        writer.writerow(record)
+
+
+def _trigger_rerun() -> None:
+    try:  # Streamlit >= 1.32
+        st.rerun()
+    except AttributeError:  # pragma: no cover - старые версии Streamlit
+        st.experimental_rerun()  # type: ignore[attr-defined]
+
+
 def feedback_button() -> None:
     @st.dialog("Обратная связь")
     def _show_feedback_dialog() -> None:
         st.write("Будем рады предложениям по улучшению и информации об ошибках.")
+
+        feedback_state = _get_feedback_state()
+        pending_message = st.session_state.pop(FEEDBACK_FORM_RESULT_KEY, None)
+        if pending_message:
+            status, context = pending_message
+            if status == "success":
+                st.success(
+                    f"Спасибо, {context or 'коллега'}! Мы получили ваше сообщение."
+                )
+            elif status == "warning":
+                st.warning("Пожалуйста, заполните поле «Сообщение».")
+
         with st.form(key="feedback_form"):
-            name = st.text_input("Имя", key="feedback_form_name")
-            email = st.text_input("E-mail", key="feedback_form_email")
-            message = st.text_area("Сообщение", key="feedback_form_message", height=180)
+            name = st.text_input("Имя", value=feedback_state.get("name", ""))
+            email = st.text_input("E-mail", value=feedback_state.get("email", ""))
+            message = st.text_area(
+                "Сообщение", value=feedback_state.get("message", ""), height=180
+            )
             submitted = st.form_submit_button("Отправить")
-            if submitted:
-                if message.strip():
-                    st.success(f"Спасибо, {name or 'коллега'}! Мы получили ваше сообщение.")
-                    st.session_state["feedback_form_name"] = ""
-                    st.session_state["feedback_form_email"] = ""
-                    st.session_state["feedback_form_message"] = ""
-                else:
-                    st.warning("Пожалуйста, заполните поле «Сообщение».")
+
+        if submitted:
+            feedback_state = {
+                "name": name,
+                "email": email,
+                "message": message,
+            }
+            if message.strip():
+                _store_feedback(name, email, message)
+                st.session_state[FEEDBACK_FORM_RESULT_KEY] = ("success", name)
+                st.session_state[FEEDBACK_FORM_STATE_KEY] = _default_feedback_state()
+            else:
+                st.session_state[FEEDBACK_FORM_RESULT_KEY] = ("warning", None)
+                st.session_state[FEEDBACK_FORM_STATE_KEY] = feedback_state
+            _trigger_rerun()
 
     if st.button("Обратная связь", key="feedback_button", use_container_width=True):
         _show_feedback_dialog()
