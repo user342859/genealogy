@@ -52,10 +52,37 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📚 Конструктор академических родословных")
-st.caption(
-    "Данные заранее загружены в репозиторий (папка db_lineages). Выберите начальных руководителей и создайте деревья."
-)
+
+def feedback_button() -> None:
+    @st.dialog("Обратная связь")
+    def _show_feedback_dialog() -> None:
+        st.write("Будем рады предложениям по улучшению и информации об ошибках.")
+        with st.form(key="feedback_form"):
+            name = st.text_input("Имя", key="feedback_form_name")
+            email = st.text_input("E-mail", key="feedback_form_email")
+            message = st.text_area("Сообщение", key="feedback_form_message", height=180)
+            submitted = st.form_submit_button("Отправить")
+            if submitted:
+                if message.strip():
+                    st.success(f"Спасибо, {name or 'коллега'}! Мы получили ваше сообщение.")
+                    st.session_state["feedback_form_name"] = ""
+                    st.session_state["feedback_form_email"] = ""
+                    st.session_state["feedback_form_message"] = ""
+                else:
+                    st.warning("Пожалуйста, заполните поле «Сообщение».")
+
+    if st.button("Обратная связь", key="feedback_button", use_container_width=True):
+        _show_feedback_dialog()
+
+
+header_left, header_right = st.columns([0.78, 0.22])
+with header_left:
+    st.title("📚 Конструктор академических родословных")
+    st.caption(
+        "Данные заранее загружены в репозиторий (папка db_lineages). Выберите начальных руководителей и создайте деревья."
+    )
+with header_right:
+    feedback_button()
 
 # ---------------------- Хелперы -------------------------------------------
 
