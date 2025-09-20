@@ -14,7 +14,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Callable, Dict, List, Set, Tuple
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -178,6 +178,31 @@ def variants(full: str) -> Set[str]:
     }
 
 
+def degree_level(row: pd.Series) -> str:
+    raw = str(row.get("degree.degree_level", ""))
+    value = raw.strip().lower()
+    if value.startswith("док"):
+        return "doctor"
+    if value.startswith("кан"):
+        return "candidate"
+    return ""
+
+
+def is_doctor(row: pd.Series) -> bool:
+    return degree_level(row) == "doctor"
+
+
+def is_candidate(row: pd.Series) -> bool:
+    return degree_level(row) == "candidate"
+
+
+TREE_OPTIONS: List[tuple[str, str, Callable[[pd.Series], bool] | None]] = [
+    ("Общее дерево", "general", None),
+    ("Дерево докторов наук", "doctors", is_doctor),
+    ("Дерево кандидатов наук", "candidates", is_candidate),
+]
+
+
 def build_index(df: pd.DataFrame, supervisor_cols: List[str]) -> Dict[str, Set[int]]:
     idx: Dict[str, Set[int]] = {}
     for col in supervisor_cols:
@@ -196,9 +221,14 @@ def rows_for(df: pd.DataFrame, index: Dict[str, Set[int]], name: str) -> pd.Data
     return df.loc[list(hits)] if hits else df.iloc[0:0]
 
 
-def lineage(df: pd.DataFrame, index: Dict[str, Set[int]], root: str) -> tuple[nx.DiGraph, pd.DataFrame]:
+def lineage(
+    df: pd.DataFrame,
+    index: Dict[str, Set[int]],
+    root: str,
+    first_level_filter: Callable[[pd.Series], bool] | None = None,
+) -> tuple[nx.DiGraph, pd.DataFrame]:
     G = nx.DiGraph()
-    collected = []
+    selected_indices: Set[int] = set()
     Q, seen = [root], set()
     while Q:
         cur = Q.pop(0)
@@ -206,14 +236,16 @@ def lineage(df: pd.DataFrame, index: Dict[str, Set[int]], root: str) -> tuple[nx
             continue
         seen.add(cur)
         rows = rows_for(df, index, cur)
-        if not rows.empty:
-            collected.append(rows)
-        for _, r in rows.iterrows():
+        for idx, r in rows.iterrows():
             child = str(r.get(AUTHOR_COLUMN, "")).strip()
             if child:
+                if cur == root and first_level_filter is not None:
+                    if not first_level_filter(r):
+                        continue
                 G.add_edge(cur, child)
                 Q.append(child)
-    subset = pd.concat(collected, ignore_index=True).drop_duplicates() if collected else df.iloc[0:0]
+                selected_indices.add(idx)
+    subset = df.loc[sorted(selected_indices)] if selected_indices else df.iloc[0:0]
     return G, subset
 
 
@@ -487,6 +519,15 @@ build_clicked = st.button("Построить деревья", type="primary")
 if build_clicked or shared_roots:
     st.session_state["built"] = True
 build = st.session_state.get("built", False)
+tree_option_labels = [label for label, _, _ in TREE_OPTIONS]
+selected_tree_labels = st.multiselect(
+    "Типы деревьев для построения",
+    options=tree_option_labels,
+    default=[tree_option_labels[0]],
+    help="Фильтрация по степени применяется только к первому уровню относительно выбранного руководителя.",
+)
+selected_tree_labels = selected_tree_labels or [tree_option_labels[0]]
+selected_tree_configs = [opt for opt in TREE_OPTIONS if opt[0] in selected_tree_labels]
 export_md_outline = st.checkbox("Также сохранить оглавление (.md)", value=False)
 
 if build:
@@ -500,64 +541,123 @@ if build:
     for root in roots:
         st.markdown("---")
         st.subheader(f"▶ {root}")
-        G, subset = lineage(df, idx, root)
 
-        if G.number_of_edges() == 0:
-            st.info("Потомки для этого имени не найдены.")
+        tree_results = []
+        for label, suffix, first_level_filter in selected_tree_configs:
+            G, subset = lineage(df, idx, root, first_level_filter=first_level_filter)
+            tree_results.append(
+                {
+                    "label": label,
+                    "suffix": suffix,
+                    "graph": G,
+                    "subset": subset,
+                }
+            )
+
+        root_slug = slug(root)
+        person_entries: List[tuple[str, bytes]] = []
+        has_content = False
+
+        for tree in tree_results:
+            label = tree["label"]
+            suffix = tree["suffix"]
+            G = tree["graph"]
+            subset = tree["subset"]
+
+            if G.number_of_edges() == 0:
+                st.info(f"{label}: потомки не найдены для выбранного типа дерева.")
+                continue
+
+            has_content = True
+            st.markdown(f"#### 🌳 {label}")
+
+            fig = draw_matplotlib(G, root)
+            png_buf = io.BytesIO()
+            fig.savefig(png_buf, format="png", dpi=300, bbox_inches="tight")
+            png_bytes = png_buf.getvalue()
+
+            st.image(png_bytes, caption="Миниатюра PNG", width=220)
+
+            html = build_pyvis_html(G, root)
+            st.components.v1.html(html, height=800, width=2000, scrolling=True)
+            html_bytes = html.encode("utf-8")
+
+            csv_bytes = subset.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+
+            md_bytes = None
+            if export_md_outline:
+                out_lines: List[str] = []
+
+                def walk(n: str, d: int = 0) -> None:
+                    out_lines.append(f"{'  ' * d}- {n}")
+                    for c in G.successors(n):
+                        walk(c, d + 1)
+
+                walk(root)
+                md_bytes = ("\n".join(out_lines)).encode("utf-8")
+
+            file_prefix = root_slug if suffix == "general" else f"{root_slug}.{suffix}"
+
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                st.download_button(
+                    "Скачать PNG",
+                    data=png_bytes,
+                    file_name=f"{file_prefix}.png",
+                    mime="image/png",
+                    key=f"png_{file_prefix}",
+                )
+            with c2:
+                st.download_button(
+                    "Скачать HTML",
+                    data=html_bytes,
+                    file_name=f"{file_prefix}.html",
+                    mime="text/html",
+                    key=f"html_{file_prefix}",
+                )
+            with c3:
+                st.download_button(
+                    "Скачать выборку CSV",
+                    data=csv_bytes,
+                    file_name=f"{file_prefix}.sampling.csv",
+                    mime="text/csv",
+                    key=f"csv_{file_prefix}",
+                )
+            with c4:
+                if md_bytes is not None:
+                    st.download_button(
+                        "Скачать оглавление .md",
+                        data=md_bytes,
+                        file_name=f"{file_prefix}.xmind.md",
+                        mime="text/markdown",
+                        key=f"md_{file_prefix}",
+                    )
+                else:
+                    st.empty()
+
+            person_entries.append((f"{file_prefix}.png", png_bytes))
+            person_entries.append((f"{file_prefix}.html", html_bytes))
+            person_entries.append((f"{file_prefix}.sampling.csv", csv_bytes))
+            zf.writestr(f"{file_prefix}.png", png_bytes)
+            zf.writestr(f"{file_prefix}.html", html_bytes)
+            zf.writestr(f"{file_prefix}.sampling.csv", csv_bytes)
+            if md_bytes is not None:
+                person_entries.append((f"{file_prefix}.xmind.md", md_bytes))
+                zf.writestr(f"{file_prefix}.xmind.md", md_bytes)
+
+        if not has_content:
             continue
 
-        # PNG (миниатюра) + HTML (широкий)
-        fig = draw_matplotlib(G, root)
-        png_buf = io.BytesIO()
-        fig.savefig(png_buf, format="png", dpi=300, bbox_inches="tight")
-        png_bytes = png_buf.getvalue()
-
-        st.image(png_bytes, caption="Миниатюра PNG", width=220)
-
-        html = build_pyvis_html(G, root)
-        st.components.v1.html(html, height=800, width=2000, scrolling=True)
-        html_bytes = html.encode("utf-8")
-
-        # CSV с выборкой
-        csv_bytes = subset.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-
-        # Markdown‑оглавление (по желанию)
-        md_bytes = None
-        if export_md_outline:
-            out_lines: List[str] = []
-            def walk(n: str, d: int = 0):
-                out_lines.append(f"{'  ' * d}- {n}")
-                for c in G.successors(n):
-                    walk(c, d + 1)
-            walk(root)
-            md_bytes = ("\n".join(out_lines)).encode("utf-8")
-
-        s = slug(root)
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            st.download_button("Скачать PNG", data=png_bytes, file_name=f"{s}.png", mime="image/png")
-        with c2:
-            st.download_button("Скачать HTML", data=html_bytes, file_name=f"{s}.html", mime="text/html")
-        with c3:
-            st.download_button("Скачать выборку CSV", data=csv_bytes, file_name=f"{s}.sampling.csv", mime="text/csv")
-        with c4:
-            if md_bytes is not None:
-                st.download_button("Скачать оглавление .md", data=md_bytes, file_name=f"{s}.xmind.md", mime="text/markdown")
-            else:
-                st.empty()
-
-        # ZIP для текущего руководителя
-        person_zip_buf = io.BytesIO()
-        try:
-            with zipfile.ZipFile(person_zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z_person:
-                z_person.writestr(f"{s}.png", png_bytes)
-                z_person.writestr(f"{s}.html", html_bytes)
-                z_person.writestr(f"{s}.sampling.csv", csv_bytes)
-                if md_bytes is not None:
-                    z_person.writestr(f"{s}.xmind.md", md_bytes)
-            person_zip = person_zip_buf.getvalue()
-        except Exception:
-            person_zip = None
+        person_zip: bytes | None = None
+        if person_entries:
+            person_zip_buf = io.BytesIO()
+            try:
+                with zipfile.ZipFile(person_zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z_person:
+                    for filename, data in person_entries:
+                        z_person.writestr(filename, data)
+                person_zip = person_zip_buf.getvalue()
+            except Exception:
+                person_zip = None
 
         col_zip_person, col_share_person = st.columns([3, 1])
         with col_zip_person:
@@ -565,18 +665,12 @@ if build:
                 st.download_button(
                     label="⬇️ Скачать всё архивом (ZIP)",
                     data=person_zip,
-                    file_name=f"{s}.zip",
+                    file_name=f"{root_slug}.zip",
                     mime="application/zip",
-                    key=f"zip_{s}",
+                    key=f"zip_{root_slug}",
                 )
         with col_share_person:
-            share_button([root], key=f"share_{s}")
-
-        zf.writestr(f"{s}.png", png_bytes)
-        zf.writestr(f"{s}.html", html_bytes)
-        zf.writestr(f"{s}.sampling.csv", csv_bytes)
-        if md_bytes is not None:
-            zf.writestr(f"{s}.xmind.md", md_bytes)
+            share_button([root], key=f"share_{root_slug}")
 
     zf.close()
     if all_zip_buf.getbuffer().nbytes > 0:
