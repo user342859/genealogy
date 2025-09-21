@@ -491,20 +491,19 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
           #mynetwork .branch-toggle {
             position: absolute;
             transform: translate(-50%, -50%);
-            width: 22px;
-            height: 22px;
             border-radius: 50%;
             border: 1px solid #2d3f5f;
             background: #ffffff;
             color: #2d3f5f;
-            font-size: 14px;
-            line-height: 20px;
             display: flex;
             align-items: center;
             justify-content: center;
             cursor: pointer;
             pointer-events: auto;
             user-select: none;
+            padding: 0;
+            min-width: 18px;
+            min-height: 18px;
             box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
             transition: background-color 0.2s ease, color 0.2s ease;
             z-index: 10;
@@ -675,13 +674,44 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
 
           function updatePositions() {
             toggles.forEach(function(button, nodeId) {
-              const position = network.getPositions([nodeId])[nodeId];
-              if (!position) {
+              const node = network.body.data.nodes.get(nodeId);
+              if (!node || node.hidden) {
                 return;
               }
-              const canvas = network.canvasToDOM(position);
-              button.style.left = canvas.x + "px";
-              button.style.top = canvas.y + 28 + "px";
+              const bounding = network.getBoundingBox(nodeId);
+              if (!bounding) {
+                return;
+              }
+
+              const bottomCenterCanvas = {
+                x: (bounding.left + bounding.right) / 2,
+                y: bounding.bottom,
+              };
+              const topLeftDom = network.canvasToDOM({
+                x: bounding.left,
+                y: bounding.top,
+              });
+              const bottomRightDom = network.canvasToDOM({
+                x: bounding.right,
+                y: bounding.bottom,
+              });
+              const bottomCenterDom = network.canvasToDOM(bottomCenterCanvas);
+
+              const width = bottomRightDom.x - topLeftDom.x;
+              const height = bottomRightDom.y - topLeftDom.y;
+
+              if (Number.isFinite(width) && Number.isFinite(height)) {
+                const minDimension = Math.max(0, Math.min(width, height));
+                const size = Math.max(18, Math.min(44, minDimension * 0.6));
+                const roundedSize = Math.round(size);
+                const fontSize = Math.max(10, Math.round(size * 0.5));
+                button.style.width = roundedSize + "px";
+                button.style.height = roundedSize + "px";
+                button.style.fontSize = fontSize + "px";
+              }
+
+              button.style.left = bottomCenterDom.x + "px";
+              button.style.top = bottomCenterDom.y + "px";
             });
           }
 
@@ -697,6 +727,9 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
             const button = document.createElement("button");
             button.type = "button";
             button.className = "branch-toggle";
+            button.style.width = "24px";
+            button.style.height = "24px";
+            button.style.fontSize = "14px";
             button.textContent = "\u2212";
             button.title = "Свернуть/развернуть ветку";
             button.addEventListener("click", function(evt) {
