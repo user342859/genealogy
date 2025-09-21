@@ -14,6 +14,7 @@ import os
 import re
 import textwrap
 from datetime import datetime
+import math
 from pathlib import Path
 from typing import Callable, Dict, List, Set, Tuple
 
@@ -421,6 +422,7 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
     net.toggle_physics(True)
 
     children_map: Dict[str, List[str]] = {}
+    parent_map: Dict[str, Set[str]] = {}
     nodes_payload: List[str] = []
     for n in G.nodes:
         node_id = str(n)
@@ -441,6 +443,7 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
         src = str(u)
         dst = str(v)
         edges_payload.append({"from": src, "to": dst})
+        parent_map.setdefault(dst, set()).add(src)
         net.add_edge(src, dst, arrows="to")
 
     vis_opts = {
@@ -471,11 +474,59 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
         except Exception:
             pass
 
+    from collections import deque
+
+    node_depths: Dict[str, int] = {}
+    bfs_order: List[str] = []
+    queue: deque[Tuple[str, int]] = deque([(str(root), 0)])
+    seen: Set[str] = set()
+    while queue:
+        node_id, depth = queue.popleft()
+        if node_id in seen:
+            continue
+        seen.add(node_id)
+        node_depths[node_id] = depth
+        bfs_order.append(node_id)
+        for child in children_map.get(node_id, []):
+            queue.append((child, depth + 1))
+
+    leaves_by_depth: Dict[int, List[str]] = {}
+    for node_id in bfs_order:
+        if not children_map.get(node_id):
+            depth = node_depths.get(node_id)
+            if depth is None:
+                continue
+            leaves_by_depth.setdefault(depth, []).append(node_id)
+
+    max_leaf_per_row = 10
+    leaf_row_configs: List[Dict[str, object]] = []
+    for depth, nodes_at_depth in sorted(leaves_by_depth.items()):
+        total = len(nodes_at_depth)
+        if total <= max_leaf_per_row:
+            continue
+        rows_needed = math.ceil(total / max_leaf_per_row)
+        base = total // rows_needed
+        remainder = total % rows_needed
+        rows: List[List[str]] = []
+        start = 0
+        for row_index in range(rows_needed):
+            size = base + (1 if row_index < remainder else 0)
+            rows.append(nodes_at_depth[start : start + size])
+            start += size
+        leaf_row_configs.append({"depth": depth, "rows": rows})
+
+    parent_map_payload: Dict[str, List[str]] = {
+        node: sorted(parents) for node, parents in parent_map.items()
+    }
+
     config = {
         "root": str(root),
         "childrenMap": children_map,
+        "parentMap": parent_map_payload,
         "nodes": nodes_payload,
         "edges": edges_payload,
+        "nodeDepths": node_depths,
+        "leafRows": leaf_row_configs,
     }
     config_json = json.dumps(config, ensure_ascii=False)
 
@@ -527,6 +578,15 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
           }
 
           const childrenMap = config.childrenMap || {};
+          const parentMapRaw = config.parentMap || {};
+          const parentMap = {};
+          Object.keys(parentMapRaw).forEach(function(key) {
+            const value = parentMapRaw[key];
+            if (Array.isArray(value)) {
+              parentMap[key] = value.slice();
+            }
+          });
+          const leafRowConfig = Array.isArray(config.leafRows) ? config.leafRows : [];
           const rootId = config.root;
           const originalNodes = Array.isArray(config.nodes) ? config.nodes : [];
           const originalEdges = Array.isArray(config.edges) ? config.edges : [];
@@ -633,7 +693,7 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
               }
             });
             updateButton(nodeId);
-            window.requestAnimationFrame(updatePositions);
+            requestLayoutUpdate();
           }
 
           function showBranch(nodeId) {
@@ -658,10 +718,11 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
                 }
               }
             });
+            requestLayoutUpdate();
             if (descendants.length > 8) {
+              network.once("stabilizationIterationsDone", requestLayoutUpdate);
               network.stabilize();
             }
-            window.requestAnimationFrame(updatePositions);
           }
 
           function toggleBranch(nodeId) {
@@ -670,6 +731,109 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
             } else {
               hideBranch(nodeId);
             }
+          }
+
+          function arrangeLeafRows() {
+            if (!leafRowConfig.length) {
+              return;
+            }
+            const positions = network.getPositions();
+            const updates = [];
+            leafRowConfig.forEach(function(entry) {
+              if (!entry || !Array.isArray(entry.rows)) {
+                return;
+              }
+              const rows = entry.rows
+                .map(function(row) {
+                  if (!Array.isArray(row) || !row.length) {
+                    return [];
+                  }
+                  return row.filter(function(id) {
+                    return originalNodeSet.has(id);
+                  });
+                })
+                .filter(function(row) {
+                  return row.length > 0;
+                });
+              if (!rows.length) {
+                return;
+              }
+              const allNodes = [].concat.apply([], rows);
+              let baseY = 0;
+              let countY = 0;
+              allNodes.forEach(function(id) {
+                const pos = positions[id];
+                if (pos && Number.isFinite(pos.y)) {
+                  baseY += pos.y;
+                  countY += 1;
+                }
+              });
+              if (!countY) {
+                return;
+              }
+              baseY /= countY;
+
+              let spacing = 140;
+              const parentY = [];
+              allNodes.forEach(function(id) {
+                const parents = parentMap[id];
+                if (!Array.isArray(parents)) {
+                  return;
+                }
+                parents.forEach(function(parentId) {
+                  const parentPos = positions[parentId];
+                  if (parentPos && Number.isFinite(parentPos.y)) {
+                    parentY.push(parentPos.y);
+                  }
+                });
+              });
+              if (parentY.length) {
+                const sumParentY = parentY.reduce(function(acc, value) {
+                  return acc + value;
+                }, 0);
+                const avgParentY = sumParentY / parentY.length;
+                const delta = Math.abs(baseY - avgParentY);
+                if (Number.isFinite(delta) && delta > 0) {
+                  spacing = Math.max(80, delta);
+                }
+              }
+
+              rows.forEach(function(rowNodes, rowIndex) {
+                const sortedRow = rowNodes
+                  .slice()
+                  .sort(function(a, b) {
+                    const posA = positions[a];
+                    const posB = positions[b];
+                    const xA = posA && Number.isFinite(posA.x) ? posA.x : 0;
+                    const xB = posB && Number.isFinite(posB.x) ? posB.x : 0;
+                    return xA - xB;
+                  });
+                const targetY = baseY + spacing * rowIndex;
+                sortedRow.forEach(function(nodeId) {
+                  const pos = positions[nodeId];
+                  if (!pos || !Number.isFinite(pos.x)) {
+                    return;
+                  }
+                  updates.push({
+                    id: nodeId,
+                    x: pos.x,
+                    y: targetY,
+                    fixed: { x: false, y: true },
+                  });
+                });
+              });
+            });
+            if (updates.length) {
+              network.body.data.nodes.update(updates);
+              network.stopSimulation();
+            }
+          }
+
+          function requestLayoutUpdate() {
+            window.requestAnimationFrame(function() {
+              arrangeLeafRows();
+              updatePositions();
+            });
           }
 
           function updatePositions() {
@@ -745,16 +909,10 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
             updateButton(nodeId);
           });
 
-          if (!toggles.size) {
-            return;
-          }
-
           network.on("afterDrawing", updatePositions);
-          network.once("stabilizationIterationsDone", function() {
-            window.requestAnimationFrame(updatePositions);
-          });
+          network.once("stabilizationIterationsDone", requestLayoutUpdate);
           window.addEventListener("resize", updatePositions);
-          updatePositions();
+          requestLayoutUpdate();
         })();
         </script>
         """
