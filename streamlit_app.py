@@ -476,6 +476,11 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
         "childrenMap": children_map,
         "nodes": nodes_payload,
         "edges": edges_payload,
+        "leafLayout": {
+            "horizontalSpacing": 220,
+            "verticalSpacing": 120,
+            "maxPerRow": 12,
+        },
     }
     config_json = json.dumps(config, ensure_ascii=False)
 
@@ -544,6 +549,118 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
           const toggles = new Map();
           const collapsed = {};
           const descendantCache = {};
+
+          const leafLayoutRaw = (config && config.leafLayout) || {};
+          const leafLayoutConfig = {
+            horizontalSpacing: Number(leafLayoutRaw.horizontalSpacing),
+            verticalSpacing: Number(leafLayoutRaw.verticalSpacing),
+            maxPerRow: Number(leafLayoutRaw.maxPerRow),
+          };
+          if (
+            !Number.isFinite(leafLayoutConfig.horizontalSpacing) ||
+            leafLayoutConfig.horizontalSpacing <= 0
+          ) {
+            leafLayoutConfig.horizontalSpacing = 220;
+          }
+          if (
+            !Number.isFinite(leafLayoutConfig.verticalSpacing) ||
+            leafLayoutConfig.verticalSpacing <= 0
+          ) {
+            leafLayoutConfig.verticalSpacing = 120;
+          }
+          if (!Number.isFinite(leafLayoutConfig.maxPerRow) || leafLayoutConfig.maxPerRow < 1) {
+            leafLayoutConfig.maxPerRow = 12;
+          } else {
+            leafLayoutConfig.maxPerRow = Math.max(1, Math.floor(leafLayoutConfig.maxPerRow));
+          }
+
+          let layoutScheduled = false;
+
+          function scheduleLeafLayout() {
+            if (layoutScheduled) {
+              return;
+            }
+            layoutScheduled = true;
+            window.requestAnimationFrame(function() {
+              layoutScheduled = false;
+              applyLeafGridLayout();
+              updatePositions();
+            });
+          }
+
+          function applyLeafGridLayout() {
+            const leafIds = [];
+            originalNodes.forEach(function(nodeId) {
+              const children = childrenMap[nodeId];
+              if (children && children.length) {
+                return;
+              }
+              const node = network.body.data.nodes.get(nodeId);
+              if (!node || node.hidden) {
+                return;
+              }
+              leafIds.push(nodeId);
+            });
+
+            if (leafIds.length <= 1) {
+              return;
+            }
+
+            const positions = network.getPositions(leafIds);
+            const leavesWithPos = leafIds
+              .map(function(nodeId) {
+                const pos = positions[nodeId] || {};
+                const x = Number.isFinite(pos.x) ? pos.x : 0;
+                const y = Number.isFinite(pos.y) ? pos.y : 0;
+                return { id: nodeId, x: x, y: y };
+              })
+              .sort(function(a, b) {
+                if (a.x === b.x) {
+                  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+                }
+                return a.x - b.x;
+              });
+
+            let baseY = -Infinity;
+            let sumX = 0;
+            leavesWithPos.forEach(function(entry) {
+              sumX += entry.x;
+              if (entry.y > baseY) {
+                baseY = entry.y;
+              }
+            });
+            if (!Number.isFinite(baseY)) {
+              baseY = 0;
+            }
+            const centerX = leavesWithPos.length ? sumX / leavesWithPos.length : 0;
+
+            const updates = [];
+            leavesWithPos.forEach(function(entry, index) {
+              const row = Math.floor(index / leafLayoutConfig.maxPerRow);
+              const rowStartIndex = row * leafLayoutConfig.maxPerRow;
+              const rowSize = Math.min(
+                leafLayoutConfig.maxPerRow,
+                leavesWithPos.length - rowStartIndex
+              );
+              const rowWidth = leafLayoutConfig.horizontalSpacing * Math.max(0, rowSize - 1);
+              const startX = centerX - rowWidth / 2;
+              const column = index - rowStartIndex;
+              const x = startX + column * leafLayoutConfig.horizontalSpacing;
+              const y = baseY + row * leafLayoutConfig.verticalSpacing;
+              updates.push({
+                id: entry.id,
+                x: x,
+                y: y,
+                fixed: { x: true, y: true },
+                physics: false,
+              });
+            });
+
+            if (updates.length) {
+              network.body.data.nodes.update(updates);
+              network.redraw();
+            }
+          }
 
           function getDescendants(nodeId) {
             if (descendantCache[nodeId]) {
@@ -633,7 +750,7 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
               }
             });
             updateButton(nodeId);
-            window.requestAnimationFrame(updatePositions);
+            scheduleLeafLayout();
           }
 
           function showBranch(nodeId) {
@@ -661,7 +778,7 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
             if (descendants.length > 8) {
               network.stabilize();
             }
-            window.requestAnimationFrame(updatePositions);
+            scheduleLeafLayout();
           }
 
           function toggleBranch(nodeId) {
@@ -745,16 +862,17 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
             updateButton(nodeId);
           });
 
-          if (!toggles.size) {
-            return;
-          }
+          scheduleLeafLayout();
 
-          network.on("afterDrawing", updatePositions);
           network.once("stabilizationIterationsDone", function() {
-            window.requestAnimationFrame(updatePositions);
+            scheduleLeafLayout();
           });
-          window.addEventListener("resize", updatePositions);
-          updatePositions();
+
+          if (toggles.size) {
+            network.on("afterDrawing", updatePositions);
+            window.addEventListener("resize", updatePositions);
+            updatePositions();
+          }
         })();
         </script>
         """
