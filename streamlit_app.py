@@ -490,7 +490,7 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
 
           #mynetwork .branch-toggle {
             position: absolute;
-            transform: translate(-50%, -50%);
+            transform: translate(-50%, 0);
             border-radius: 50%;
             border: 1px solid #2d3f5f;
             background: #ffffff;
@@ -502,8 +502,8 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
             pointer-events: auto;
             user-select: none;
             padding: 0;
-            min-width: 18px;
-            min-height: 18px;
+            min-width: 16px;
+            min-height: 16px;
             box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
             transition: background-color 0.2s ease, color 0.2s ease;
             z-index: 10;
@@ -699,19 +699,21 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
 
               const width = bottomRightDom.x - topLeftDom.x;
               const height = bottomRightDom.y - topLeftDom.y;
+              let verticalOffset = 14;
 
               if (Number.isFinite(width) && Number.isFinite(height)) {
                 const minDimension = Math.max(0, Math.min(width, height));
-                const size = Math.max(18, Math.min(44, minDimension * 0.6));
+                const size = Math.max(16, Math.min(36, minDimension * 0.5));
                 const roundedSize = Math.round(size);
-                const fontSize = Math.max(10, Math.round(size * 0.5));
+                const fontSize = Math.max(9, Math.round(size * 0.45));
                 button.style.width = roundedSize + "px";
                 button.style.height = roundedSize + "px";
                 button.style.fontSize = fontSize + "px";
+                verticalOffset = Math.max(10, Math.round(roundedSize / 2 + 6));
               }
 
               button.style.left = bottomCenterDom.x + "px";
-              button.style.top = bottomCenterDom.y + "px";
+              button.style.top = bottomCenterDom.y + verticalOffset + "px";
             });
           }
 
@@ -727,9 +729,9 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
             const button = document.createElement("button");
             button.type = "button";
             button.className = "branch-toggle";
-            button.style.width = "24px";
-            button.style.height = "24px";
-            button.style.fontSize = "14px";
+            button.style.width = "20px";
+            button.style.height = "20px";
+            button.style.fontSize = "12px";
             button.textContent = "\u2212";
             button.title = "Свернуть/развернуть ветку";
             button.addEventListener("click", function(evt) {
