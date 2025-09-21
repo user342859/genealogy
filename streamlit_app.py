@@ -12,6 +12,7 @@ import io
 import json
 import os
 import re
+import textwrap
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Set, Tuple
@@ -419,10 +420,28 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
     net = Network(height="1000px", width="100%", directed=True, bgcolor="#ffffff")
     net.toggle_physics(True)
 
+    children_map: Dict[str, List[str]] = {}
+    nodes_payload: List[str] = []
     for n in G.nodes:
-        net.add_node(n, label=multiline(n), title=str(n), shape="box", color="#ADD8E6")
+        node_id = str(n)
+        nodes_payload.append(node_id)
+        successors = [str(child) for child in G.successors(n)]
+        if successors:
+            children_map[node_id] = successors
+        net.add_node(
+            node_id,
+            label=multiline(n),
+            title=str(n),
+            shape="box",
+            color="#ADD8E6",
+        )
+
+    edges_payload: List[Dict[str, str]] = []
     for u, v in G.edges:
-        net.add_edge(u, v, arrows="to")
+        src = str(u)
+        dst = str(v)
+        edges_payload.append({"from": src, "to": dst})
+        net.add_edge(src, dst, arrows="to")
 
     vis_opts = {
         "nodes": {"font": {"size": 12}},  # шрифт поменьше
@@ -451,6 +470,266 @@ def build_pyvis_html(G: nx.DiGraph, root: str) -> str:
             tmp.unlink()
         except Exception:
             pass
+
+    config = {
+        "root": str(root),
+        "childrenMap": children_map,
+        "nodes": nodes_payload,
+        "edges": edges_payload,
+    }
+    config_json = json.dumps(config, ensure_ascii=False)
+
+    injection = textwrap.dedent(
+        """
+        <style>
+          #mynetwork .branch-toggle-layer {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+          }
+
+          #mynetwork .branch-toggle {
+            position: absolute;
+            transform: translate(-50%, -50%);
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            border: 1px solid #2d3f5f;
+            background: #ffffff;
+            color: #2d3f5f;
+            font-size: 14px;
+            line-height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            pointer-events: auto;
+            user-select: none;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+            transition: background-color 0.2s ease, color 0.2s ease;
+            z-index: 10;
+          }
+
+          #mynetwork .branch-toggle:hover {
+            background: #2d3f5f;
+            color: #ffffff;
+          }
+        </style>
+        <script>
+        (function() {
+          const config = __CONFIG_JSON__;
+          const network = window.network;
+          if (!network || !network.body || !network.body.data) {
+            return;
+          }
+          const container = document.getElementById("mynetwork");
+          if (!container) {
+            return;
+          }
+
+          const childrenMap = config.childrenMap || {};
+          const rootId = config.root;
+          const originalNodes = Array.isArray(config.nodes) ? config.nodes : [];
+          const originalEdges = Array.isArray(config.edges) ? config.edges : [];
+          const originalNodeSet = new Set(originalNodes);
+          const originalEdgeSet = new Set(
+            originalEdges.map(function(edge) {
+              return edge.from + "\u2192" + edge.to;
+            })
+          );
+
+          const toggleLayer = document.createElement("div");
+          toggleLayer.className = "branch-toggle-layer";
+          container.appendChild(toggleLayer);
+
+          const toggles = new Map();
+          const collapsed = {};
+          const descendantCache = {};
+
+          function getDescendants(nodeId) {
+            if (descendantCache[nodeId]) {
+              return descendantCache[nodeId];
+            }
+            const result = [];
+            const queue = (childrenMap[nodeId] || []).slice();
+            const seen = new Set();
+            while (queue.length) {
+              const current = queue.shift();
+              if (seen.has(current)) {
+                continue;
+              }
+              seen.add(current);
+              result.push(current);
+              const children = childrenMap[current];
+              if (children && children.length) {
+                queue.push.apply(queue, children);
+              }
+            }
+            descendantCache[nodeId] = result;
+            return result;
+          }
+
+          function updateButton(nodeId) {
+            const button = toggles.get(nodeId);
+            if (!button) {
+              return;
+            }
+            button.textContent = collapsed[nodeId] ? "+" : "\u2212";
+            const node = network.body.data.nodes.get(nodeId);
+            if (node && node.hidden) {
+              button.style.display = "none";
+            } else {
+              button.style.display = "flex";
+            }
+          }
+
+          function setNodesHidden(ids, hidden) {
+            if (!ids.length) {
+              return;
+            }
+            const updates = [];
+            ids.forEach(function(id) {
+              if (!originalNodeSet.has(id)) {
+                return;
+              }
+              updates.push({ id: id, hidden: hidden });
+            });
+            if (updates.length) {
+              network.body.data.nodes.update(updates);
+            }
+          }
+
+          function setEdgesHidden(idSet, hidden) {
+            if (!idSet.size) {
+              return;
+            }
+            const updates = [];
+            network.body.data.edges.forEach(function(edge) {
+              const key = edge.from + "\u2192" + edge.to;
+              if (!originalEdgeSet.has(key)) {
+                return;
+              }
+              if (idSet.has(edge.from) || idSet.has(edge.to)) {
+                updates.push({ id: edge.id, hidden: hidden });
+              }
+            });
+            if (updates.length) {
+              network.body.data.edges.update(updates);
+            }
+          }
+
+          function hideBranch(nodeId) {
+            if (!childrenMap[nodeId] || !childrenMap[nodeId].length) {
+              return;
+            }
+            collapsed[nodeId] = true;
+            const descendants = getDescendants(nodeId);
+            const idSet = new Set(descendants);
+            setNodesHidden(descendants, true);
+            setEdgesHidden(idSet, true);
+            descendants.forEach(function(id) {
+              const button = toggles.get(id);
+              if (button) {
+                button.style.display = "none";
+              }
+            });
+            updateButton(nodeId);
+            window.requestAnimationFrame(updatePositions);
+          }
+
+          function showBranch(nodeId) {
+            if (!childrenMap[nodeId] || !childrenMap[nodeId].length) {
+              return;
+            }
+            collapsed[nodeId] = false;
+            const descendants = getDescendants(nodeId);
+            const idSet = new Set(descendants);
+            setNodesHidden(descendants, false);
+            setEdgesHidden(idSet, false);
+            updateButton(nodeId);
+            descendants.forEach(function(id) {
+              updateButton(id);
+            });
+            descendants.forEach(function(id) {
+              if (collapsed[id]) {
+                hideBranch(id);
+                const button = toggles.get(id);
+                if (button) {
+                  button.style.display = "flex";
+                }
+              }
+            });
+            if (descendants.length > 8) {
+              network.stabilize();
+            }
+            window.requestAnimationFrame(updatePositions);
+          }
+
+          function toggleBranch(nodeId) {
+            if (collapsed[nodeId]) {
+              showBranch(nodeId);
+            } else {
+              hideBranch(nodeId);
+            }
+          }
+
+          function updatePositions() {
+            toggles.forEach(function(button, nodeId) {
+              const position = network.getPositions([nodeId])[nodeId];
+              if (!position) {
+                return;
+              }
+              const canvas = network.canvasToDOM(position);
+              button.style.left = canvas.x + "px";
+              button.style.top = canvas.y + 28 + "px";
+            });
+          }
+
+          Object.keys(childrenMap).forEach(function(nodeId) {
+            if (nodeId === rootId) {
+              collapsed[nodeId] = false;
+              return;
+            }
+            if (!childrenMap[nodeId] || !childrenMap[nodeId].length) {
+              collapsed[nodeId] = false;
+              return;
+            }
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "branch-toggle";
+            button.textContent = "\u2212";
+            button.title = "Свернуть/развернуть ветку";
+            button.addEventListener("click", function(evt) {
+              evt.preventDefault();
+              evt.stopPropagation();
+              toggleBranch(nodeId);
+            });
+            toggleLayer.appendChild(button);
+            toggles.set(nodeId, button);
+            collapsed[nodeId] = false;
+            updateButton(nodeId);
+          });
+
+          if (!toggles.size) {
+            return;
+          }
+
+          network.on("afterDrawing", updatePositions);
+          network.once("stabilizationIterationsDone", function() {
+            window.requestAnimationFrame(updatePositions);
+          });
+          window.addEventListener("resize", updatePositions);
+          updatePositions();
+        })();
+        </script>
+        """
+    ).replace("__CONFIG_JSON__", config_json)
+
+    if "</body>" in html:
+        html = html.replace("</body>", f"{injection}\n</body>")
+    else:
+        html += injection
+
     return html
 
 
