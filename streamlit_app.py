@@ -19,6 +19,7 @@ from typing import Callable, Dict, List, Set, Tuple
 
 import matplotlib.pyplot as plt
 import networkx as nx
+import numpy as np
 import pandas as pd
 import streamlit as st
 from urllib.parse import urlencode, urlsplit
@@ -28,12 +29,15 @@ except Exception:  # pragma: no cover - совместимость со стар
     get_script_run_ctx = None  # type: ignore
 import zipfile
 from pyvis.network import Network
+from sklearn.metrics import silhouette_samples, silhouette_score
 
 # ---------------------- Константы -----------------------------------------
 DATA_DIR = "db_lineages"      # папка с CSV внутри репозитория
 CSV_GLOB = "*.csv"            # какие файлы брать
 AUTHOR_COLUMN = "candidate_name"
 SUPERVISOR_COLUMNS = [f"supervisors_{i}.name" for i in (1, 2)]
+
+BASIC_SCORES_DIR = "basic_scores"  # тематические профили диссертаций
 
 FEEDBACK_FILE = Path("feedback.csv")
 FEEDBACK_FORM_STATE_KEY = "feedback_form_state"
@@ -787,6 +791,122 @@ def load_data() -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
+@st.cache_data(show_spinner=False)
+def load_basic_scores() -> pd.DataFrame:
+    base = Path(BASIC_SCORES_DIR).expanduser().resolve()
+    files = sorted(base.glob("*.csv"))
+    if not files:
+        raise FileNotFoundError(
+            f"В {base} не найдено CSV с тематическими профилями"
+        )
+
+    frames: list[pd.DataFrame] = []
+    for file in files:
+        frame = pd.read_csv(file)
+        if "Code" not in frame.columns:
+            raise KeyError(f"В файле {file.name} нет столбца 'Code'")
+        frames.append(frame)
+
+    scores = pd.concat(frames, ignore_index=True)
+    scores = scores.dropna(subset=["Code"])
+    scores["Code"] = scores["Code"].astype(str).str.strip()
+    scores = scores[scores["Code"].str.len() > 0]
+    scores = scores.drop_duplicates(subset="Code", keep="first")
+
+    feature_columns = [c for c in scores.columns if c != "Code"]
+    if not feature_columns:
+        raise ValueError("Не найдены столбцы с тематическими компонентами")
+
+    scores[feature_columns] = scores[feature_columns].apply(
+        pd.to_numeric, errors="coerce"
+    )
+    scores[feature_columns] = scores[feature_columns].fillna(0.0)
+
+    return scores
+
+
+def gather_school_dataset(
+    df: pd.DataFrame,
+    index: Dict[str, Set[int]],
+    root: str,
+    scores: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, int]:
+    _, subset = lineage(df, index, root)
+    if subset.empty:
+        empty = pd.DataFrame(columns=[*scores.columns, "school", AUTHOR_COLUMN])
+        return empty, empty, 0
+
+    working = subset[["Code", AUTHOR_COLUMN]].copy()
+    working["Code"] = working["Code"].astype(str).str.strip()
+    working = working[working["Code"].str.len() > 0]
+    codes = working["Code"].unique().tolist()
+
+    dataset = scores[scores["Code"].isin(codes)].copy()
+    dataset["school"] = root
+    dataset = dataset.merge(
+        working.drop_duplicates(subset="Code"), on="Code", how="left"
+    )
+
+    missing_codes = sorted(set(codes) - set(dataset["Code"]))
+    missing_info = (
+        working[working["Code"].isin(missing_codes)]
+        .drop_duplicates(subset="Code")
+        .rename(columns={AUTHOR_COLUMN: "candidate_name"})
+    )
+
+    dataset = dataset.rename(columns={AUTHOR_COLUMN: "candidate_name"})
+    if "candidate_name" not in dataset.columns:
+        dataset["candidate_name"] = None
+
+    return dataset, missing_info, len(codes)
+
+
+def make_silhouette_plot(
+    sample_scores: np.ndarray,
+    labels: np.ndarray,
+    school_order: list[str],
+    overall_score: float,
+    metric: str,
+) -> plt.Figure:
+    fig, ax = plt.subplots(figsize=(8, 5))
+    y_lower = 10
+    colors = [plt.cm.tab10(i) for i in range(len(school_order))]
+
+    for idx, school in enumerate(school_order):
+        mask = labels == idx
+        cluster_scores = sample_scores[mask]
+        if cluster_scores.size == 0:
+            continue
+        cluster_scores = np.sort(cluster_scores)
+        size = cluster_scores.size
+        y_upper = y_lower + size
+        ax.fill_betweenx(
+            np.arange(y_lower, y_upper),
+            0,
+            cluster_scores,
+            facecolor=colors[idx],
+            alpha=0.7,
+        )
+        ax.text(
+            -0.98,
+            y_lower + size / 2,
+            f"{school} (n={size})",
+            fontsize=10,
+            va="center",
+        )
+        y_lower = y_upper + 10
+
+    ax.axvline(x=overall_score, color="gray", linestyle="--", linewidth=1.5)
+    ax.set_xlim([-1, 1])
+    ax.set_xlabel("Коэффициент силуэта")
+    ax.set_ylabel("Диссертации")
+    ax.set_title(f"Silhouette plot (метрика: {metric})")
+    ax.set_yticks([])
+    ax.grid(axis="x", linestyle=":", alpha=0.4)
+    fig.tight_layout()
+    return fig
+
+
 # ====================== ИНТЕРФЕЙС (без технического сайдбара) ============
 try:
     df = load_data()
@@ -813,191 +933,484 @@ shared_roots = st.query_params.get_all("root")
 valid_shared_roots = [r for r in shared_roots if r in all_supervisor_names]
 manual_prefill = "\n".join(r for r in shared_roots if r not in all_supervisor_names)
 
-st.subheader("Выбор научных руководителей для построения деревьев")
-roots = st.multiselect(
-    "Выберите имена из базы",
-    options=sorted(all_supervisor_names),
-    default=valid_shared_roots,  # если пришли по ссылке, подставляем имена
-    help="Список формируется из столбцов с руководителями",
+tab_lineages, tab_silhouette = st.tabs(
+    ["Построение деревьев", "Сравнение научных школ"]
 )
-manual = st.text_area(
-    "Или добавьте имена вручную в формате: Фамилия Имя Отчество (по одному на строку)",
-    height=120,
-    value=manual_prefill,
-)
-manual_list = [r.strip() for r in manual.splitlines() if r.strip()]
-roots = list(dict.fromkeys([*roots, *manual_list]))  # убрать дубликаты, сохранить порядок
 
-# Если есть имена в параметрах, сразу строим деревья
-build_clicked = st.button("Построить деревья", type="primary")
-if build_clicked or shared_roots:
-    st.session_state["built"] = True
-build = st.session_state.get("built", False)
-tree_option_labels = [label for label, _, _ in TREE_OPTIONS]
-selected_tree_labels = st.multiselect(
-    "Типы деревьев для построения",
-    options=tree_option_labels,
-    default=[tree_option_labels[0]],
-    help="Фильтрация по степени применяется только к первому уровню относительно выбранного руководителя.",
-)
-selected_tree_labels = selected_tree_labels or [tree_option_labels[0]]
-selected_tree_configs = [opt for opt in TREE_OPTIONS if opt[0] in selected_tree_labels]
-export_md_outline = st.checkbox("Также сохранить оглавление (.md)", value=False)
+with tab_lineages:
+    st.subheader("Выбор научных руководителей для построения деревьев")
+    roots = st.multiselect(
+        "Выберите имена из базы",
+        options=sorted(all_supervisor_names),
+        default=valid_shared_roots,  # если пришли по ссылке, подставляем имена
+        help="Список формируется из столбцов с руководителями",
+    )
+    manual = st.text_area(
+        "Или добавьте имена вручную в формате: Фамилия Имя Отчество (по одному на строку)",
+        height=120,
+        value=manual_prefill,
+    )
+    manual_list = [r.strip() for r in manual.splitlines() if r.strip()]
+    roots = list(dict.fromkeys([*roots, *manual_list]))  # убрать дубликаты, сохранить порядок
 
-if build:
-    if not roots:
-        st.warning("Пожалуйста, выберите или введите хотя бы одно имя руководителя.")
-        st.stop()
+    build_clicked = st.button("Построить деревья", type="primary", key="build_trees")
+    if build_clicked or shared_roots:
+        st.session_state["built"] = True
+    build = st.session_state.get("built", False)
 
-    all_zip_buf = io.BytesIO()
-    zf = zipfile.ZipFile(all_zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED)
+    tree_option_labels = [label for label, _, _ in TREE_OPTIONS]
+    selected_tree_labels = st.multiselect(
+        "Типы деревьев для построения",
+        options=tree_option_labels,
+        default=[tree_option_labels[0]],
+        help="Фильтрация по степени применяется только к первому уровню относительно выбранного руководителя.",
+    )
+    selected_tree_labels = selected_tree_labels or [tree_option_labels[0]]
+    selected_tree_configs = [opt for opt in TREE_OPTIONS if opt[0] in selected_tree_labels]
+    export_md_outline = st.checkbox("Также сохранить оглавление (.md)", value=False)
 
-    for root in roots:
-        st.markdown("---")
-        st.subheader(f"▶ {root}")
+    if build:
+        if not roots:
+            st.warning("Пожалуйста, выберите или введите хотя бы одно имя руководителя.")
+        else:
+            all_zip_buf = io.BytesIO()
+            zf = zipfile.ZipFile(all_zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED)
 
-        tree_results = []
-        for label, suffix, first_level_filter in selected_tree_configs:
-            G, subset = lineage(df, idx, root, first_level_filter=first_level_filter)
-            tree_results.append(
-                {
-                    "label": label,
-                    "suffix": suffix,
-                    "graph": G,
-                    "subset": subset,
-                }
-            )
+            for root in roots:
+                st.markdown("---")
+                st.subheader(f"▶ {root}")
 
-        root_slug = slug(root)
-        person_entries: List[tuple[str, bytes]] = []
-        has_content = False
-
-        for tree in tree_results:
-            label = tree["label"]
-            suffix = tree["suffix"]
-            G = tree["graph"]
-            subset = tree["subset"]
-
-            if G.number_of_edges() == 0:
-                st.info(f"{label}: потомки не найдены для выбранного типа дерева.")
-                continue
-
-            has_content = True
-            st.markdown(f"#### 🌳 {label}")
-
-            fig = draw_matplotlib(G, root)
-            png_buf = io.BytesIO()
-            fig.savefig(png_buf, format="png", dpi=300, bbox_inches="tight")
-            png_bytes = png_buf.getvalue()
-
-            st.image(png_bytes, caption="Миниатюра PNG", width=220)
-
-            html = build_pyvis_html(G, root)
-            st.components.v1.html(html, height=800, width=2000, scrolling=True)
-            html_bytes = html.encode("utf-8")
-
-            csv_bytes = subset.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-
-            md_bytes = None
-            if export_md_outline:
-                out_lines: List[str] = []
-
-                def walk(n: str, d: int = 0) -> None:
-                    out_lines.append(f"{'  ' * d}- {n}")
-                    for c in G.successors(n):
-                        walk(c, d + 1)
-
-                walk(root)
-                md_bytes = ("\n".join(out_lines)).encode("utf-8")
-
-            file_prefix = root_slug if suffix == "general" else f"{root_slug}.{suffix}"
-
-            c1, c2, c3, c4 = st.columns(4)
-            with c1:
-                st.download_button(
-                    "Скачать PNG",
-                    data=png_bytes,
-                    file_name=f"{file_prefix}.png",
-                    mime="image/png",
-                    key=f"png_{file_prefix}",
-                )
-            with c2:
-                st.download_button(
-                    "Скачать HTML",
-                    data=html_bytes,
-                    file_name=f"{file_prefix}.html",
-                    mime="text/html",
-                    key=f"html_{file_prefix}",
-                )
-            with c3:
-                st.download_button(
-                    "Скачать выборку CSV",
-                    data=csv_bytes,
-                    file_name=f"{file_prefix}.sampling.csv",
-                    mime="text/csv",
-                    key=f"csv_{file_prefix}",
-                )
-            with c4:
-                if md_bytes is not None:
-                    st.download_button(
-                        "Скачать оглавление .md",
-                        data=md_bytes,
-                        file_name=f"{file_prefix}.xmind.md",
-                        mime="text/markdown",
-                        key=f"md_{file_prefix}",
+                tree_results = []
+                for label, suffix, first_level_filter in selected_tree_configs:
+                    G, subset = lineage(
+                        df, idx, root, first_level_filter=first_level_filter
                     )
-                else:
-                    st.empty()
+                    tree_results.append(
+                        {
+                            "label": label,
+                            "suffix": suffix,
+                            "graph": G,
+                            "subset": subset,
+                        }
+                    )
 
-            person_entries.append((f"{file_prefix}.png", png_bytes))
-            person_entries.append((f"{file_prefix}.html", html_bytes))
-            person_entries.append((f"{file_prefix}.sampling.csv", csv_bytes))
-            zf.writestr(f"{file_prefix}.png", png_bytes)
-            zf.writestr(f"{file_prefix}.html", html_bytes)
-            zf.writestr(f"{file_prefix}.sampling.csv", csv_bytes)
-            if md_bytes is not None:
-                person_entries.append((f"{file_prefix}.xmind.md", md_bytes))
-                zf.writestr(f"{file_prefix}.xmind.md", md_bytes)
+                root_slug = slug(root)
+                person_entries: List[tuple[str, bytes]] = []
+                has_content = False
 
-        if not has_content:
-            continue
+                for tree in tree_results:
+                    label = tree["label"]
+                    suffix = tree["suffix"]
+                    G = tree["graph"]
+                    subset = tree["subset"]
 
-        person_zip: bytes | None = None
-        if person_entries:
-            person_zip_buf = io.BytesIO()
-            try:
-                with zipfile.ZipFile(person_zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z_person:
-                    for filename, data in person_entries:
-                        z_person.writestr(filename, data)
-                person_zip = person_zip_buf.getvalue()
-            except Exception:
-                person_zip = None
+                    if G.number_of_edges() == 0:
+                        st.info(
+                            f"{label}: потомки не найдены для выбранного типа дерева."
+                        )
+                        continue
 
-        col_zip_person, col_share_person = st.columns([3, 1])
-        with col_zip_person:
-            if person_zip is not None:
-                st.download_button(
-                    label="⬇️ Скачать всё архивом (ZIP)",
-                    data=person_zip,
-                    file_name=f"{root_slug}.zip",
-                    mime="application/zip",
-                    key=f"zip_{root_slug}",
-                )
-        with col_share_person:
-            share_button([root], key=f"share_{root_slug}")
+                    has_content = True
+                    st.markdown(f"#### 🌳 {label}")
 
-    zf.close()
-    if all_zip_buf.getbuffer().nbytes > 0:
-        col_zip, col_share = st.columns([3, 1])
-        with col_zip:
-            st.download_button(
-                label="⬇️ Скачать всё архивом (ZIP)",
-                data=all_zip_buf.getvalue(),
-                file_name="lineages_export.zip",
-                mime="application/zip",
-            )
-        with col_share:
-            share_button(roots, key="share_all")
-else:
-    st.info("Выберите или добавьте имена руководителей и нажмите ‘Построить деревья’.")
+                    fig = draw_matplotlib(G, root)
+                    png_buf = io.BytesIO()
+                    fig.savefig(png_buf, format="png", dpi=300, bbox_inches="tight")
+                    png_bytes = png_buf.getvalue()
+
+                    st.image(png_bytes, caption="Миниатюра PNG", width=220)
+
+                    html = build_pyvis_html(G, root)
+                    st.components.v1.html(html, height=800, width=2000, scrolling=True)
+                    html_bytes = html.encode("utf-8")
+
+                    csv_bytes = subset.to_csv(
+                        index=False, encoding="utf-8-sig"
+                    ).encode("utf-8-sig")
+
+                    md_bytes = None
+                    if export_md_outline:
+                        out_lines: List[str] = []
+
+                        def walk(n: str, d: int = 0) -> None:
+                            out_lines.append(f"{'  ' * d}- {n}")
+                            for c in G.successors(n):
+                                walk(c, d + 1)
+
+                        walk(root)
+                        md_bytes = ("\n".join(out_lines)).encode("utf-8")
+
+                    file_prefix = (
+                        root_slug if suffix == "general" else f"{root_slug}.{suffix}"
+                    )
+
+                    c1, c2, c3, c4 = st.columns(4)
+                    with c1:
+                        st.download_button(
+                            "Скачать PNG",
+                            data=png_bytes,
+                            file_name=f"{file_prefix}.png",
+                            mime="image/png",
+                            key=f"png_{file_prefix}",
+                        )
+                    with c2:
+                        st.download_button(
+                            "Скачать HTML",
+                            data=html_bytes,
+                            file_name=f"{file_prefix}.html",
+                            mime="text/html",
+                            key=f"html_{file_prefix}",
+                        )
+                    with c3:
+                        st.download_button(
+                            "Скачать выборку CSV",
+                            data=csv_bytes,
+                            file_name=f"{file_prefix}.sampling.csv",
+                            mime="text/csv",
+                            key=f"csv_{file_prefix}",
+                        )
+                    with c4:
+                        if md_bytes is not None:
+                            st.download_button(
+                                "Скачать оглавление .md",
+                                data=md_bytes,
+                                file_name=f"{file_prefix}.xmind.md",
+                                mime="text/markdown",
+                                key=f"md_{file_prefix}",
+                            )
+                        else:
+                            st.empty()
+
+                    person_entries.append((f"{file_prefix}.png", png_bytes))
+                    person_entries.append((f"{file_prefix}.html", html_bytes))
+                    person_entries.append((f"{file_prefix}.sampling.csv", csv_bytes))
+                    zf.writestr(f"{file_prefix}.png", png_bytes)
+                    zf.writestr(f"{file_prefix}.html", html_bytes)
+                    zf.writestr(f"{file_prefix}.sampling.csv", csv_bytes)
+                    if md_bytes is not None:
+                        person_entries.append((f"{file_prefix}.xmind.md", md_bytes))
+                        zf.writestr(f"{file_prefix}.xmind.md", md_bytes)
+
+                if not has_content:
+                    continue
+
+                person_zip: bytes | None = None
+                if person_entries:
+                    person_zip_buf = io.BytesIO()
+                    try:
+                        with zipfile.ZipFile(
+                            person_zip_buf,
+                            mode="w",
+                            compression=zipfile.ZIP_DEFLATED,
+                        ) as z_person:
+                            for filename, data in person_entries:
+                                z_person.writestr(filename, data)
+                        person_zip = person_zip_buf.getvalue()
+                    except Exception:
+                        person_zip = None
+
+                col_zip_person, col_share_person = st.columns([3, 1])
+                with col_zip_person:
+                    if person_zip is not None:
+                        st.download_button(
+                            label="⬇️ Скачать всё архивом (ZIP)",
+                            data=person_zip,
+                            file_name=f"{root_slug}.zip",
+                            mime="application/zip",
+                            key=f"zip_{root_slug}",
+                        )
+                with col_share_person:
+                    share_button([root], key=f"share_{root_slug}")
+
+            zf.close()
+            if all_zip_buf.getbuffer().nbytes > 0:
+                col_zip, col_share = st.columns([3, 1])
+                with col_zip:
+                    st.download_button(
+                        label="⬇️ Скачать всё архивом (ZIP)",
+                        data=all_zip_buf.getvalue(),
+                        file_name="lineages_export.zip",
+                        mime="application/zip",
+                    )
+                with col_share:
+                    share_button(roots, key="share_all")
+    else:
+        st.info(
+            "Выберите или добавьте имена руководителей и нажмите ‘Построить деревья’."
+        )
+
+with tab_silhouette:
+    st.subheader("Сравнение научных школ по тематическим профилям")
+    st.write(
+        "Введите двух научных руководителей, чтобы сравнить тематические профили их "
+        "школ по коэффициенту силуэта. Потомки берутся из базы родословных, а оценки "
+        "тематических векторов — из CSV-файлов в папке `basic_scores`."
+    )
+
+    select_options = ["—"] + sorted(all_supervisor_names)
+    col_left, col_right = st.columns(2)
+    with col_left:
+        root_a_choice = st.selectbox(
+            "Персона 1",
+            options=select_options,
+            index=0,
+            help="Можно выбрать имя из базы или ввести вручную ниже.",
+            key="silhouette_root_a_choice",
+        )
+        root_a_manual = st.text_input(
+            "Персона 1 (ручной ввод)",
+            value="",
+            placeholder="Фамилия Имя Отчество",
+            key="silhouette_root_a_manual",
+        )
+    with col_right:
+        root_b_choice = st.selectbox(
+            "Персона 2",
+            options=select_options,
+            index=0,
+            help="Можно выбрать имя из базы или ввести вручную ниже.",
+            key="silhouette_root_b_choice",
+        )
+        root_b_manual = st.text_input(
+            "Персона 2 (ручной ввод)",
+            value="",
+            placeholder="Фамилия Имя Отчество",
+            key="silhouette_root_b_manual",
+        )
+
+    def _resolve_root(choice: str, manual: str) -> str:
+        manual_clean = manual.strip()
+        if manual_clean:
+            return manual_clean
+        choice_clean = choice.strip()
+        return choice_clean if choice_clean and choice_clean != "—" else ""
+
+    root_a = _resolve_root(root_a_choice, root_a_manual)
+    root_b = _resolve_root(root_b_choice, root_b_manual)
+
+    metric_options = {
+        "cosine": "Косинусное расстояние",
+        "euclidean": "Евклидово расстояние",
+    }
+    metric_key = st.selectbox(
+        "Метрика расстояния",
+        options=list(metric_options.keys()),
+        format_func=lambda m: metric_options[m],
+        index=0,
+        key="silhouette_metric",
+    )
+
+    run_analysis = st.button(
+        "Рассчитать коэффициент силуэта",
+        type="primary",
+        key="run_silhouette_analysis",
+    )
+
+    if run_analysis:
+        if not root_a or not root_b:
+            st.warning("Укажите две разные научные школы для сравнения.")
+        elif root_a == root_b:
+            st.warning("Для анализа нужны две разные персоналии.")
+        else:
+            with st.spinner("Выполняется анализ тематических профилей..."):
+                try:
+                    scores_df = load_basic_scores()
+                except Exception as exc:
+                    st.error(f"Не удалось загрузить тематические профили: {exc}")
+                    scores_df = None
+
+                if scores_df is not None:
+                    dataset_a, missing_a, total_a = gather_school_dataset(
+                        df, idx, root_a, scores_df
+                    )
+                    dataset_b, missing_b, total_b = gather_school_dataset(
+                        df, idx, root_b, scores_df
+                    )
+
+                    messages: list[str] = []
+                    if total_a == 0:
+                        messages.append(
+                            f"Для школы {root_a} не найдены диссертации-потомки в базе."
+                        )
+                    if total_b == 0:
+                        messages.append(
+                            f"Для школы {root_b} не найдены диссертации-потомки в базе."
+                        )
+                    if messages:
+                        st.warning("\n".join(messages))
+
+                    combined = pd.concat([dataset_a, dataset_b], ignore_index=True)
+                    if combined.empty:
+                        st.info(
+                            "Недостаточно данных для расчёта коэффициента силуэта."
+                        )
+                    else:
+                        feature_columns = [c for c in scores_df.columns if c != "Code"]
+                        combined = combined.dropna(subset=["Code"])
+                        combined = combined.drop_duplicates(subset="Code")
+                        combined["candidate_name"] = combined["candidate_name"].fillna("")
+                        combined["school"] = combined["school"].astype(str)
+
+                        label_mapping = {root_a: 0, root_b: 1}
+                        combined["label"] = combined["school"].map(label_mapping)
+
+                        analysis_valid = True
+                        if combined["label"].isna().any():
+                            st.error(
+                                "Не удалось сопоставить все диссертации с выбранными школами."
+                            )
+                            analysis_valid = False
+
+                        if analysis_valid and combined["label"].nunique() < 2:
+                            st.warning(
+                                "В выборку попали диссертации только одной школы — сравнение невозможно."
+                            )
+                            analysis_valid = False
+
+                        if analysis_valid and len(combined) < 2:
+                            st.warning("Недостаточно диссертаций для вычисления метрики.")
+                            analysis_valid = False
+
+                        if analysis_valid:
+                            X = combined[feature_columns].to_numpy(dtype=float)
+                            labels_array = combined["label"].to_numpy(dtype=int)
+
+                            try:
+                                sample_scores = silhouette_samples(
+                                    X, labels_array, metric=metric_key
+                                )
+                                overall_score = float(
+                                    silhouette_score(
+                                        X, labels_array, metric=metric_key
+                                    )
+                                )
+                            except Exception as exc:
+                                st.error(
+                                    f"Ошибка при вычислении коэффициента силуэта: {exc}"
+                                )
+                                analysis_valid = False
+
+                        if analysis_valid:
+                            combined["silhouette"] = sample_scores
+
+                            counts = combined["school"].value_counts()
+                            mean_by_school = combined.groupby("school")[
+                                "silhouette"
+                            ].mean()
+
+                            summary_cols = st.columns(3)
+                            with summary_cols[0]:
+                                st.metric(
+                                    "Средний silhouette (общий)",
+                                    f"{overall_score:.3f}",
+                                    delta=f"n={len(combined)}",
+                                )
+                            with summary_cols[1]:
+                                st.metric(
+                                    f"{root_a}",
+                                    f"{mean_by_school.get(root_a, float('nan')):.3f}",
+                                    delta=f"n={counts.get(root_a, 0)}",
+                                )
+                            with summary_cols[2]:
+                                st.metric(
+                                    f"{root_b}",
+                                    f"{mean_by_school.get(root_b, float('nan')):.3f}",
+                                    delta=f"n={counts.get(root_b, 0)}",
+                                )
+
+                            if not missing_a.empty or not missing_b.empty:
+                                warn_parts: list[str] = []
+                                if not missing_a.empty:
+                                    warn_parts.append(
+                                        f"У школы {root_a} нет тематических профилей для {len(missing_a)} диссертаций."
+                                    )
+                                if not missing_b.empty:
+                                    warn_parts.append(
+                                        f"У школы {root_b} нет тематических профилей для {len(missing_b)} диссертаций."
+                                    )
+                                st.warning("\n".join(warn_parts))
+
+                                with st.expander(
+                                    "Показать диссертации без тематических оценок"
+                                ):
+                                    if not missing_a.empty:
+                                        st.markdown(f"**{root_a}**")
+                                        st.dataframe(
+                                            missing_a.rename(
+                                                columns={
+                                                    "Code": "Код диссертации",
+                                                    "candidate_name": "Автор",
+                                                }
+                                            ),
+                                            use_container_width=True,
+                                        )
+                                    if not missing_b.empty:
+                                        st.markdown(f"**{root_b}**")
+                                        st.dataframe(
+                                            missing_b.rename(
+                                                columns={
+                                                    "Code": "Код диссертации",
+                                                    "candidate_name": "Автор",
+                                                }
+                                            ),
+                                            use_container_width=True,
+                                        )
+
+                            display_df = (
+                                combined[
+                                    ["Code", "candidate_name", "school", "silhouette"]
+                                ]
+                                .sort_values(
+                                    by=["school", "silhouette"],
+                                    ascending=[True, False],
+                                )
+                                .rename(
+                                    columns={
+                                        "Code": "Код диссертации",
+                                        "candidate_name": "Автор",
+                                        "school": "Школа",
+                                        "silhouette": "Silhouette",
+                                    }
+                                )
+                            )
+                            display_df["Silhouette"] = display_df["Silhouette"].map(
+                                lambda x: round(float(x), 4)
+                            )
+
+                            st.markdown("### Подробности по диссертациям")
+                            st.dataframe(display_df, use_container_width=True)
+
+                            csv_bytes = display_df.to_csv(
+                                index=False, encoding="utf-8-sig"
+                            ).encode("utf-8-sig")
+                            slug_a = slug(root_a) or "school_a"
+                            slug_b = slug(root_b) or "school_b"
+                            st.download_button(
+                                "Скачать таблицу (CSV)",
+                                data=csv_bytes,
+                                file_name=f"silhouette_{slug_a}_vs_{slug_b}.csv",
+                                mime="text/csv",
+                                key="silhouette_download_csv",
+                            )
+
+                            st.markdown("### Диаграмма силуэта")
+                            fig = make_silhouette_plot(
+                                sample_scores,
+                                labels_array,
+                                [root_a, root_b],
+                                overall_score,
+                                metric_key,
+                            )
+                            st.pyplot(fig, use_container_width=True)
+                            plot_buf = io.BytesIO()
+                            fig.savefig(
+                                plot_buf, format="png", dpi=300, bbox_inches="tight"
+                            )
+                            st.download_button(
+                                "Скачать диаграмму (PNG)",
+                                data=plot_buf.getvalue(),
+                                file_name=f"silhouette_{slug_a}_vs_{slug_b}.png",
+                                mime="image/png",
+                                key="silhouette_download_plot",
+                            )
 
