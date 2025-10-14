@@ -3,4 +3,6 @@ pandas
 networkx
 pyvis
 matplotlib
+numpy
+scikit-learn
 
