@@ -1034,6 +1034,29 @@ def gather_school_dataset(
     return dataset, missing_info, len(codes)
 
 
+SILHOUETTE_HELP_TEXT = """
+Силуэтные графики визуализируют, насколько хорошо разделены кластеры диссертаций. В нашем случае: насколько диссертации одной научной школы тематически и содержательно близки к диссертация другой научной школы.
+
+Горизонтальная ось – это значение коэффициента силуэта.
+
+Вертикальная ось – отдельные диссертации, сгруппированные по кластерам (научным руководителям). «Лезвие» графика представляет собой один кластер.
+
+Ширина «лезвия» показывает количество работ в кластере.
+
+Вертикальная пунктирная линия – это среднее значение коэффициента силуэта для всех работ. Это интегральная метрика, которая оценивает качество кластеризации, то есть насколько хорошо работы сгруппированы. Значение варьируется от -1 до +1.
+- Значение, близкое к +1 указывает на то, что кластеры плотные, четко разделены, и работы внутри одной группы очень похожи друг на друга, но сильно отличаются от работ в других группах. В нашем случае: между диссертациями двух научных школ практически отсутствуют тематические и содержательные пересечения.
+- Значение, близкое к 0, говорит о том, что кластеры сильно пересекаются, и тематические границы между ними размыты.
+- Отрицательное значение (близкое к -1) указывает на то, что работы, вероятно, были отнесены к неверному кластеру. Это указывает на очень высокую тематическую близость и отсутствие четкого разделения.  В нашем случае: диссертации двух научных школ тематически и содержательно очень лизки друг к другу.
+
+Горизонтальные линии, образующие «лезвие» – это элементы кластера. В нашем случае одна горизонтальная лина = одна диссертация.
+
+Длина горизонтальной линии = степень соответствия:
+- Длинная линия вправо (значение близко к +1) означает, что диссертация – образцовый представитель своей группы. Ее тема очень близка к другим работам в этой же школе и сильно отличается от тем в сравниваемой школе. Она находится в «ядре» кластера.
+- Короткая линия (значение близко к 0) означает, что диссертация находится на «границе». Ее тема расположена на стыке двух научных школ. Она одинаково (не)похожа как на своих, так и на чужих.
+- Линия, уходящая влево в отрицательную зону (значение < 0) означает, что это «аномалия» или признак сильного смешения. Эта диссертация, хотя формально и принадлежит к своей группе, по своему содержанию (тематическому профилю) оказалась ближе к центру другого кластера.
+"""
+
+
 def make_silhouette_plot(
     sample_scores: np.ndarray,
     labels: np.ndarray,
@@ -1063,7 +1086,7 @@ def make_silhouette_plot(
         ax.text(
             -0.98,
             y_lower + size / 2,
-            f"{school} (n={size})",
+            f"{school} (кол-во: {size})",
             fontsize=10,
             va="center",
         )
@@ -1073,7 +1096,7 @@ def make_silhouette_plot(
     ax.set_xlim([-1, 1])
     ax.set_xlabel("Коэффициент силуэта")
     ax.set_ylabel("Диссертации")
-    ax.set_title(f"Silhouette plot (метрика: {metric})")
+    ax.set_title(f"Силуэтный график (метрика: {metric})")
     ax.set_yticks([])
     ax.grid(axis="x", linestyle=":", alpha=0.4)
     fig.tight_layout()
@@ -1324,6 +1347,20 @@ with tab_silhouette:
         "тематических векторов — из CSV-файлов в папке `basic_scores`."
     )
 
+    try:
+        popover = st.popover  # type: ignore[attr-defined]
+    except AttributeError:  # pragma: no cover - совместимость со старыми версиями
+        popover = None  # type: ignore[assignment]
+
+    if popover is not None:
+        with popover("Пояснение о силуэтном графике"):
+            st.markdown(SILHOUETTE_HELP_TEXT)
+    else:
+        if st.button("Пояснение о силуэтном графике", key="silhouette_info"):
+            st.session_state["show_silhouette_help"] = True
+        if st.session_state.get("show_silhouette_help"):
+            st.markdown(SILHOUETTE_HELP_TEXT)
+
     select_options = ["—"] + sorted(all_supervisor_names)
     col_left, col_right = st.columns(2)
     with col_left:
@@ -1478,21 +1515,21 @@ with tab_silhouette:
                             summary_cols = st.columns(3)
                             with summary_cols[0]:
                                 st.metric(
-                                    "Средний silhouette (общий)",
+                                    "Средний коэффициент силуэта (общий)",
                                     f"{overall_score:.3f}",
-                                    delta=f"n={len(combined)}",
+                                    delta=f"кол-во: {len(combined)}",
                                 )
                             with summary_cols[1]:
                                 st.metric(
                                     f"{root_a}",
                                     f"{mean_by_school.get(root_a, float('nan')):.3f}",
-                                    delta=f"n={counts.get(root_a, 0)}",
+                                    delta=f"кол-во: {counts.get(root_a, 0)}",
                                 )
                             with summary_cols[2]:
                                 st.metric(
                                     f"{root_b}",
                                     f"{mean_by_school.get(root_b, float('nan')):.3f}",
-                                    delta=f"n={counts.get(root_b, 0)}",
+                                    delta=f"кол-во: {counts.get(root_b, 0)}",
                                 )
 
                             if not missing_a.empty or not missing_b.empty:
@@ -1546,13 +1583,13 @@ with tab_silhouette:
                                         "Code": "Код диссертации",
                                         "candidate_name": "Автор",
                                         "school": "Школа",
-                                        "silhouette": "Silhouette",
+                                        "silhouette": "Коэффициент силуэта",
                                     }
                                 )
                             )
-                            display_df["Silhouette"] = display_df["Silhouette"].map(
-                                lambda x: round(float(x), 4)
-                            )
+                            display_df["Коэффициент силуэта"] = display_df[
+                                "Коэффициент силуэта"
+                            ].map(lambda x: round(float(x), 4))
 
                             st.markdown("### Подробности по диссертациям")
                             st.dataframe(display_df, use_container_width=True)
@@ -1570,13 +1607,13 @@ with tab_silhouette:
                                 key="silhouette_download_csv",
                             )
 
-                            st.markdown("### Диаграмма силуэта")
+                            st.markdown("### Силуэтный график")
                             fig = make_silhouette_plot(
                                 sample_scores,
                                 labels_array,
                                 [root_a, root_b],
                                 overall_score,
-                                metric_key,
+                                metric_options[metric_key],
                             )
                             st.pyplot(fig, use_container_width=True)
                             plot_buf = io.BytesIO()
@@ -1584,7 +1621,7 @@ with tab_silhouette:
                                 plot_buf, format="png", dpi=300, bbox_inches="tight"
                             )
                             st.download_button(
-                                "Скачать диаграмму (PNG)",
+                                "Скачать график (PNG)",
                                 data=plot_buf.getvalue(),
                                 file_name=f"silhouette_{slug_a}_vs_{slug_b}.png",
                                 mime="image/png",
