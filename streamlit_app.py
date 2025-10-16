@@ -15,7 +15,7 @@ import re
 import textwrap
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Literal, Optional, Set, Tuple
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -998,13 +998,22 @@ def load_basic_scores() -> pd.DataFrame:
     return scores
 
 
+ComparisonScope = Literal["direct", "all"]
+
+
 def gather_school_dataset(
     df: pd.DataFrame,
     index: Dict[str, Set[int]],
     root: str,
     scores: pd.DataFrame,
+    scope: ComparisonScope = "direct",
 ) -> tuple[pd.DataFrame, pd.DataFrame, int]:
-    _, subset = lineage(df, index, root)
+    if scope == "direct":
+        subset = rows_for(df, index, root)
+    elif scope == "all":
+        _, subset = lineage(df, index, root)
+    else:  # pragma: no cover - защитная ветка
+        raise ValueError(f"Неизвестный режим сравнения: {scope}")
     if subset.empty:
         empty = pd.DataFrame(columns=[*scores.columns, "school", AUTHOR_COLUMN])
         return empty, empty, 0
@@ -1365,28 +1374,28 @@ with tab_silhouette:
     col_left, col_right = st.columns(2)
     with col_left:
         root_a_choice = st.selectbox(
-            "Персона 1",
+            "Научный руководитель 1",
             options=select_options,
             index=0,
             help="Можно выбрать имя из базы или ввести вручную ниже.",
             key="silhouette_root_a_choice",
         )
         root_a_manual = st.text_input(
-            "Персона 1 (ручной ввод)",
+            "Научный руководитель 1 (ручной ввод)",
             value="",
             placeholder="Фамилия Имя Отчество",
             key="silhouette_root_a_manual",
         )
     with col_right:
         root_b_choice = st.selectbox(
-            "Персона 2",
+            "Научный руководитель 2",
             options=select_options,
             index=0,
             help="Можно выбрать имя из базы или ввести вручную ниже.",
             key="silhouette_root_b_choice",
         )
         root_b_manual = st.text_input(
-            "Персона 2 (ручной ввод)",
+            "Научный руководитель 2 (ручной ввод)",
             value="",
             placeholder="Фамилия Имя Отчество",
             key="silhouette_root_b_manual",
@@ -1401,6 +1410,22 @@ with tab_silhouette:
 
     root_a = _resolve_root(root_a_choice, root_a_manual)
     root_b = _resolve_root(root_b_choice, root_b_manual)
+
+    scope_options: Dict[ComparisonScope, str] = {
+        "direct": "По диссертациям под непосредственным руководством (1 поколение)",
+        "all": "По диссертациям всех поколений научной школы",
+    }
+    scope = st.radio(
+        "Диапазон сравнения",
+        options=list(scope_options.keys()),
+        format_func=lambda key: scope_options[key],
+        index=0,
+        key="silhouette_scope",
+        help=(
+            "Выберите, учитывать ли только диссертации, где выбранный научный руководитель"
+            " указан напрямую, или все поколения его научной школы."
+        ),
+    )
 
     metric_options = {
         "cosine": "Косинусное расстояние",
@@ -1422,9 +1447,9 @@ with tab_silhouette:
 
     if run_analysis:
         if not root_a or not root_b:
-            st.warning("Укажите две разные научные школы для сравнения.")
+            st.warning("Укажите двух разных научных руководителей для сравнения.")
         elif root_a == root_b:
-            st.warning("Для анализа нужны две разные персоналии.")
+            st.warning("Для анализа нужны два разных научных руководителя.")
         else:
             with st.spinner("Выполняется анализ тематических профилей..."):
                 try:
@@ -1435,20 +1460,25 @@ with tab_silhouette:
 
                 if scores_df is not None:
                     dataset_a, missing_a, total_a = gather_school_dataset(
-                        df, idx, root_a, scores_df
+                        df, idx, root_a, scores_df, scope=scope
                     )
                     dataset_b, missing_b, total_b = gather_school_dataset(
-                        df, idx, root_b, scores_df
+                        df, idx, root_b, scores_df, scope=scope
                     )
 
                     messages: list[str] = []
+                    scope_suffix = (
+                        "под непосредственным руководством выбранного научного руководителя"
+                        if scope == "direct"
+                        else "в рамках всех поколений его научной школы"
+                    )
                     if total_a == 0:
                         messages.append(
-                            f"Для школы {root_a} не найдены диссертации-потомки в базе."
+                            f"Для научного руководителя {root_a} не найдены диссертации {scope_suffix}."
                         )
                     if total_b == 0:
                         messages.append(
-                            f"Для школы {root_b} не найдены диссертации-потомки в базе."
+                            f"Для научного руководителя {root_b} не найдены диссертации {scope_suffix}."
                         )
                     if messages:
                         st.warning("\n".join(messages))
