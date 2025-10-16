@@ -15,7 +15,7 @@ import re
 import textwrap
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -50,6 +50,179 @@ PUBLIC_APP_URL = os.environ.get(
     "PUBLIC_APP_URL",
     "https://lineages-trceuocpnvyaxysnpis72f.streamlit.app/",
 ).strip().rstrip("/")
+
+# ---------------------- Тематический классификатор ------------------------
+ClassifierItem = Tuple[str, str, bool]
+
+THEMATIC_CLASSIFIER: List[ClassifierItem] = [
+    ("1.1", "Среда и предметная область", True),
+    ("1.1.1", "Уровень формального образования", True),
+    ("1.1.1.1", "Дошкольное образование", False),
+    ("1.1.1.2", "Школьное образование", False),
+    ("1.1.1.2.1", "Начальное общее образование", False),
+    ("1.1.1.2.2", "Основное общее образование", False),
+    ("1.1.1.2.3", "Среднее общее образование", False),
+    ("1.1.1.3", "Среднее профессиональное образование (СПО)", False),
+    ("1.1.1.4", "Высшее образование", False),
+    ("1.1.1.4.1", "Высшее образование – Бакалавриат", False),
+    ("1.1.1.4.2", "Высшее образование – Специалитет", False),
+    ("1.1.1.4.3", "Высшее образование – Магистратура", False),
+    ("1.1.1.5", "Подготовка кадров высшей квалификации", False),
+    ("1.1.1.5.1", "Подготовка кадров высшей квалификации – Аспирантура", False),
+    ("1.1.1.5.2", "Подготовка кадров высшей квалификации – Ординатура", False),
+    ("1.1.1.6", "Дополнительное профессиональное образование", False),
+    ("1.1.1.6.1", "Дополнительное профессиональное образование – Повышение квалификации", False),
+    ("1.1.1.6.2", "Дополнительное профессиональное образование – Профессиональная переподготовка", False),
+    ("1.1.1.7", "Дополнительное образование детей и взрослых", False),
+    ("1.1.1.8", "Профессиональное обучение", False),
+    ("1.1.2", "Предметный цикл / Область знания", True),
+    ("1.1.2.1", "Математические и естественнонаучные дисциплины", False),
+    ("1.1.2.1.1", "Математика", False),
+    ("1.1.2.1.2", "Информатика", False),
+    ("1.1.2.1.3", "Физика", False),
+    ("1.1.2.1.4", "Химия", False),
+    ("1.1.2.1.5", "Биология", False),
+    ("1.1.2.1.6", "Другие естественнонаучные дисциплины", False),
+    ("1.1.2.2", "Гуманитарные и социальные дисциплины", False),
+    ("1.1.2.2.1", "Филология", False),
+    ("1.1.2.2.1.1", "Языки", False),
+    ("1.1.2.2.1.1.1", "Русский язык", False),
+    ("1.1.2.2.1.1.2", "Язык народов России", False),
+    ("1.1.2.2.1.1.3", "Иностранный язык", False),
+    ("1.1.2.2.1.1.3.1", "Английский язык", False),
+    ("1.1.2.2.1.1.3.2", "Немецкий язык", False),
+    ("1.1.2.2.1.1.3.3", "Французский язык", False),
+    ("1.1.2.2.1.1.3.4", "Иной иностранный язык", False),
+    ("1.1.2.2.1.2", "Литература", False),
+    ("1.1.2.2.2", "История", False),
+    ("1.1.2.2.3", "Обществознание, социология", False),
+    ("1.1.2.2.4", "Социально-экономическая география", False),
+    ("1.1.2.2.5", "Экономика", False),
+    ("1.1.2.2.6", "Право", False),
+    ("1.1.2.2.7", "Другие гуманитарные и общественные дисциплины", False),
+    ("1.1.2.3", "Изобразительное и музыкальное искусство", False),
+    ("1.1.2.4", "Технология", False),
+    ("1.1.2.5", "Физическая культура и спорт", False),
+    ("1.1.2.6", "Инженерно-техническое направление", False),
+    ("1.1.2.7", "Психолого-педагогическое направление", False),
+    ("1.1.2.8", "Междисциплинарные и надпредметные области", False),
+    ("1.2", "Субъект образования (когорта)", True),
+    ("1.2.1", "Социально-профессиональная группа", True),
+    ("1.2.1.1", "Обучающиеся общеобразовательных организаций", False),
+    ("1.2.1.2", "Студенты колледжей и техникумов (СПО)", False),
+    ("1.2.1.3", "Студенты вузов (ВО)", False),
+    ("1.2.1.4", "Действующие специалисты (в системе ДПО)", False),
+    ("1.2.1.5", "Педагогические и научные кадры (как объект развития)", False),
+    ("1.2.1.6", "Военнослужащие / сотрудники силовых структур", False),
+    ("1.2.1.7", "Спортсмены", False),
+    ("1.2.2", "Специфические образовательные потребности", True),
+    ("1.2.2.1", "Обучающиеся с ОВЗ и/или инвалидностью", False),
+    ("1.2.2.2", "Одаренные и высокомотивированные обучающиеся", False),
+    ("1.2.2.3", "Обучающиеся из групп социального риска", False),
+    ("1.2.2.4", "Инофоны / образовательные мигранты", False),
+    ("2.1", "Тип и масштаб разрабатываемого решения", True),
+    ("2.1.1", "Уровень абстракции", True),
+    ("2.1.1.1", "Теоретико-методологическая концепция", False),
+    ("2.1.1.2", "Структурно-функциональная модель", False),
+    ("2.1.1.3", "Организационно-педагогическая система", False),
+    ("2.1.1.4", "Педагогическая технология", False),
+    ("2.1.1.5", "Частная методика преподавания", False),
+    ("2.1.1.6", "Комплекс педагогических условий", False),
+    ("2.1.1.7", "Образовательная/воспитательная программа", False),
+    ("2.1.2", "Доминирующая педагогическая парадигма", True),
+    ("2.1.2.1", "Знаниевая (традиционная)", False),
+    ("2.1.2.2", "Компетентностная", False),
+    ("2.1.2.3", "Системно-деятельностная", False),
+    ("2.1.2.4", "Личностно-ориентированная / Гуманистическая", False),
+    ("2.1.2.5", "Аксиологическая (ценностная)", False),
+    ("2.1.2.6", "Контекстная / Проблемная", False),
+    ("2.2", "Технологии и методы педагогического воздействия", True),
+    ("2.2.1", "Ведущая форма организации деятельности", True),
+    ("2.2.1.1", "Репродуктивная учебная деятельность", False),
+    ("2.2.1.2", "Проектная деятельность", False),
+    ("2.2.1.3", "Исследовательская деятельность", False),
+    ("2.2.1.4", "Игровая деятельность (дидактическая, деловая, ролевая)", False),
+    ("2.2.1.5", "Дискуссионные формы (дискуссия, дебаты)", False),
+    ("2.2.1.6", "Художественно-творческая деятельность", False),
+    ("2.2.1.7", "Спортивно-тренировочная деятельность", False),
+    ("2.2.2", "Используемые средства обучения", True),
+    ("2.2.2.1", "Текстовые и печатные средства (учебник, рабочая тетрадь)", False),
+    ("2.2.2.2", "Аудиовизуальные средства (видео, презентации)", False),
+    ("2.2.2.3", "Интерактивные цифровые ресурсы (тренажеры, симуляторы, ЭОР)", False),
+    ("2.2.2.4", "Средства виртуальной и дополненной реальности (VR/AR)", False),
+    ("2.2.2.5", "Платформенные решения (LMS, онлайн-курсы)", False),
+    ("2.2.2.6", "Средства геймификации", False),
+    ("2.2.3", "Доминирующий тип педагогического взаимодействия", True),
+    ("2.2.3.1", "Прямое управление (инструктаж, объяснение)", False),
+    ("2.2.3.2", "Фасилитация / Модерация", False),
+    ("2.2.3.3", "Тьюторское сопровождение / Наставничество", False),
+    ("2.2.3.4", "Консультирование", False),
+    ("3.1", "Когнитивная сфера", True),
+    ("3.1.1", "Предметные знания и представления", False),
+    ("3.1.2", "Методологические знания", False),
+    ("3.1.3", "Критическое мышление", False),
+    ("3.1.4", "Креативное (творческое) мышление", False),
+    ("3.1.5", "Системное / Проектное мышление", False),
+    ("3.1.6", "Научное / Профессиональное мировоззрение", False),
+    ("3.2", "Деятельностно-практическая сфера", True),
+    ("3.2.1", "Предметные умения и навыки (Hard Skills)", False),
+    ("3.2.2", "Универсальные навыки (Soft Skills)", False),
+    ("3.2.2.1", "Коммуникативные навыки", False),
+    ("3.2.2.2", "Навыки кооперации и работы в команде", False),
+    ("3.2.2.3", "Навыки самоорганизации и тайм-менеджмента", False),
+    ("3.2.2.4", "Навыки решения проблем (problem-solving)", False),
+    ("3.2.3", "Профессиональные компетенции", False),
+    ("3.2.4", "Метапредметные / Ключевые компетенции", False),
+    ("3.2.5", "Социальная компетентность", False),
+    ("3.3", "Личностно-ценностная сфера", True),
+    ("3.3.1", "Мотивация (учебная, профессиональная)", False),
+    ("3.3.2", "Ценностные ориентации", False),
+    ("3.3.3", "Волевая саморегуляция", False),
+    ("3.3.4", "Рефлексивные способности", False),
+    ("3.3.5", "Интегративные личностные конструкты", True),
+    ("3.3.5.1", "Готовность (к деятельности, самообразованию и др.)", False),
+    ("3.3.5.2", "Субъектность / Субъектная позиция", False),
+    ("3.3.5.3", "Идентичность (профессиональная, гражданская)", False),
+    ("3.3.5.4", "Патриотизм / Гражданственность", False),
+    ("3.3.6", "Формируемый тип культуры личности", True),
+    ("3.3.6.1", "Информационная культура", False),
+    ("3.3.6.2", "Правовая культура", False),
+    ("3.3.6.3", "Экологическая культура", False),
+    ("3.3.6.4", "Физическая культура", False),
+    ("3.3.6.5", "Профессиональная культура", False),
+    ("3.3.6.6", "Культура безопасности жизнедеятельности", False),
+]
+
+CLASSIFIER_BY_CODE: Dict[str, ClassifierItem] = {
+    code: (code, title, disabled) for code, title, disabled in THEMATIC_CLASSIFIER
+}
+
+PROFILE_SELECTION_SESSION_KEY = "profile_selected_codes"
+PROFILE_SELECTION_LIMIT = 5
+PROFILE_MIN_SCORE = 4.0
+
+
+def classifier_depth(code: str) -> int:
+    return code.count(".") if code else 0
+
+
+def classifier_format(option: Optional[ClassifierItem]) -> str:
+    if option is None:
+        return "— выберите пункт —"
+    code, title, disabled = option
+    indent = "\u2003" * classifier_depth(code)
+    label = f"{code} {title}"
+    if disabled:
+        label += " (нельзя выбрать)"
+    return f"{indent}{label}"
+
+
+def classifier_label(code: str) -> str:
+    item = CLASSIFIER_BY_CODE.get(code)
+    if not item:
+        return code
+    _, title, _ = item
+    return f"{code} · {title}"
 
 # ---------------------- Оформление страницы -------------------------------
 st.set_page_config(page_title="Академические родословные", layout="wide")
@@ -933,8 +1106,12 @@ shared_roots = st.query_params.get_all("root")
 valid_shared_roots = [r for r in shared_roots if r in all_supervisor_names]
 manual_prefill = "\n".join(r for r in shared_roots if r not in all_supervisor_names)
 
-tab_lineages, tab_silhouette = st.tabs(
-    ["Построение деревьев", "Сравнение научных школ"]
+tab_lineages, tab_silhouette, tab_profiles = st.tabs(
+    [
+        "Построение деревьев",
+        "Сравнение научных школ",
+        "Поиск по тематическим профилям",
+    ]
 )
 
 with tab_lineages:
@@ -1413,4 +1590,228 @@ with tab_silhouette:
                                 mime="image/png",
                                 key="silhouette_download_plot",
                             )
+
+with tab_profiles:
+    st.subheader("Поиск диссертаций по тематическим профилям")
+    st.write(
+        "Выберите до пяти элементов классификатора тематических профилей. В "
+        "подборку попадут диссертации, у которых баллы по каждому из выбранных "
+        f"пунктов не ниже {PROFILE_MIN_SCORE}, а ранжирование будет происходить по "
+        "сумме баллов."
+    )
+
+    if PROFILE_SELECTION_SESSION_KEY not in st.session_state:
+        st.session_state[PROFILE_SELECTION_SESSION_KEY] = []
+
+    selected_codes: List[str] = list(
+        st.session_state.get(PROFILE_SELECTION_SESSION_KEY, [])
+    )
+
+    selection_container = st.container()
+    with selection_container:
+        st.markdown("#### Добавление позиций классификатора")
+        options: List[Optional[ClassifierItem]] = [None, *THEMATIC_CLASSIFIER]
+        choice = st.selectbox(
+            "Элемент классификатора",
+            options=options,
+            format_func=classifier_format,
+            key="profile_classifier_choice",
+        )
+
+        add_reason: Optional[str] = None
+        add_code: Optional[str] = None
+        if choice is not None:
+            add_code = choice[0]
+            if choice[2]:
+                add_reason = "Этот пункт является обобщённым и не участвует в подборке."
+            elif add_code in selected_codes:
+                add_reason = "Пункт уже добавлен в список."
+            elif len(selected_codes) >= PROFILE_SELECTION_LIMIT:
+                add_reason = (
+                    f"Можно выбрать не более {PROFILE_SELECTION_LIMIT} пунктов классификатора."
+                )
+
+        add_disabled = add_code is None or add_reason is not None
+        add_clicked = st.button(
+            "Добавить в подборку",
+            disabled=add_disabled,
+            key="profile_add_button",
+        )
+
+        if add_clicked and add_code is not None:
+            updated = [*selected_codes, add_code]
+            st.session_state[PROFILE_SELECTION_SESSION_KEY] = updated
+            selected_codes = updated
+
+        if add_reason and choice is not None:
+            st.caption(add_reason)
+
+    st.markdown("#### Выбранные позиции")
+    if selected_codes:
+        st.caption(
+            f"Учтём диссертации, у которых баллы ≥ {PROFILE_MIN_SCORE} по каждому выбранному пункту."
+        )
+        for code in list(selected_codes):
+            cols = st.columns([0.85, 0.15])
+            with cols[0]:
+                st.markdown(f"• **{classifier_label(code)}**")
+            with cols[1]:
+                if st.button(
+                    "Удалить",
+                    key=f"profile_remove_{code}",
+                    use_container_width=True,
+                ):
+                    updated = [c for c in selected_codes if c != code]
+                    st.session_state[PROFILE_SELECTION_SESSION_KEY] = updated
+                    selected_codes = updated
+                    _trigger_rerun()
+
+        col_clear, col_dummy = st.columns([0.2, 0.8])
+        with col_clear:
+            if st.button("Очистить выбор", key="profile_clear_selection"):
+                st.session_state[PROFILE_SELECTION_SESSION_KEY] = []
+                selected_codes = []
+                _trigger_rerun()
+    else:
+        st.info(
+            "Добавьте от одного до пяти пунктов классификатора, чтобы сформировать подборку."
+        )
+
+    run_search = st.button(
+        "Найти диссертации",
+        type="primary",
+        disabled=not selected_codes,
+        key="profile_run_search",
+    )
+
+    if run_search and selected_codes:
+        try:
+            scores_df = load_basic_scores()
+        except Exception as exc:  # pragma: no cover - защита от I/O ошибок
+            st.error(f"Не удалось загрузить тематические профили: {exc}")
+            scores_df = None
+
+        if scores_df is not None:
+            missing_columns = [
+                code for code in selected_codes if code not in scores_df.columns
+            ]
+            if missing_columns:
+                st.error(
+                    "В файлах с тематическими профилями отсутствуют столбцы: "
+                    + ", ".join(f"`{c}`" for c in missing_columns)
+                )
+            else:
+                working = scores_df[["Code", *selected_codes]].copy()
+                for code in selected_codes:
+                    working = working[working[code] >= PROFILE_MIN_SCORE]
+
+                if working.empty:
+                    st.info(
+                        "Не найдено диссертаций, соответствующих заданным ограничениям."
+                    )
+                else:
+                    working["profile_total"] = working[selected_codes].sum(axis=1)
+                    sort_columns = ["profile_total", *selected_codes]
+                    working = working.sort_values(
+                        by=sort_columns,
+                        ascending=[False] * len(sort_columns),
+                    )
+
+                    info_columns = [
+                        "Code",
+                        "candidate_name",
+                        "title",
+                        "year",
+                        "degree.degree_level",
+                        "degree.science_field",
+                        "supervisors_1.name",
+                        "supervisors_2.name",
+                        "specialties_1.name",
+                        "specialties_2.name",
+                    ]
+                    available_info_columns = [
+                        col for col in info_columns if col in df.columns
+                    ]
+                    if available_info_columns:
+                        info_df = (
+                            df[available_info_columns]
+                            .copy()
+                            .drop_duplicates(subset="Code", keep="first")
+                        )
+                    else:
+                        info_df = pd.DataFrame(columns=["Code"])
+
+                    results = working.merge(info_df, on="Code", how="left")
+                    results["profile_total"] = results["profile_total"].round(2)
+
+                    score_labels = {code: classifier_label(code) for code in selected_codes}
+                    for code, label in score_labels.items():
+                        results[label] = results[code].round(2)
+
+                    supervisor_cols = [
+                        col
+                        for col in ["supervisors_1.name", "supervisors_2.name"]
+                        if col in results.columns
+                    ]
+
+                    if supervisor_cols:
+                        def _join_names(row: pd.Series) -> str:
+                            names = []
+                            for value in row.tolist():
+                                if isinstance(value, str):
+                                    clean = value.strip()
+                                    if clean and clean not in names:
+                                        names.append(clean)
+                            return ", ".join(names)
+
+                        results["Научные руководители"] = (
+                            results[supervisor_cols]
+                            .replace({"": pd.NA})
+                            .apply(_join_names, axis=1)
+                        )
+
+                    rename_map = {
+                        "Code": "Код диссертации",
+                        "candidate_name": "Автор",
+                        "title": "Название",
+                        "year": "Год защиты",
+                        "degree.degree_level": "Степень",
+                        "degree.science_field": "Отрасль науки",
+                        "specialties_1.name": "Специальность",
+                        "specialties_2.name": "Дополнительная специальность",
+                        "profile_total": "Суммарный балл",
+                    }
+
+                    column_order = [
+                        "Code",
+                        "candidate_name",
+                        "title",
+                        "year",
+                        "degree.degree_level",
+                        "degree.science_field",
+                        "Научные руководители",
+                        "specialties_1.name",
+                        "specialties_2.name",
+                        "profile_total",
+                        *score_labels.values(),
+                    ]
+                    display_columns = [
+                        col for col in column_order if col in results.columns
+                    ]
+                    display_df = results[display_columns].rename(columns=rename_map)
+
+                    st.success(f"Найдено диссертаций: {len(display_df)}")
+                    st.dataframe(display_df, use_container_width=True)
+
+                    selection_slug = slug("_".join(selected_codes)) or "profiles"
+                    csv_bytes = display_df.to_csv(
+                        index=False, encoding="utf-8-sig"
+                    ).encode("utf-8-sig")
+                    st.download_button(
+                        "Скачать результаты (CSV)",
+                        data=csv_bytes,
+                        file_name=f"profiles_{selection_slug}.csv",
+                        mime="text/csv",
+                        key="profile_download_csv",
+                    )
 
